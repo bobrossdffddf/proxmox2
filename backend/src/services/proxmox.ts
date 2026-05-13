@@ -197,24 +197,33 @@ export class ProxmoxClusterClient {
   }
 
   async powerOff(node: string, vmId: number, force = false): Promise<string> {
-    const path = force
-      ? `/nodes/${node}/qemu/${vmId}/status/stop`
-      : `/nodes/${node}/qemu/${vmId}/status/shutdown`;
-    const params = new URLSearchParams();
-    params.append("forceStop", "1");
-    params.append("timeout", "30");
-    const res = await this.clientFor(node).post<ProxmoxResponse<string>>(
-      path,
-      params.toString(),
-      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
-    );
-    return res.data.data;
+    if (force) {
+      // Hard stop — /status/stop accepts no extra params
+      const res = await this.clientFor(node).post<ProxmoxResponse<string>>(
+        `/nodes/${node}/qemu/${vmId}/status/stop`
+      );
+      return res.data.data;
+    } else {
+      // Graceful ACPI shutdown with a fallback timeout
+      const params = new URLSearchParams();
+      params.append("forceStop", "1");
+      params.append("timeout", "30");
+      const res = await this.clientFor(node).post<ProxmoxResponse<string>>(
+        `/nodes/${node}/qemu/${vmId}/status/shutdown`,
+        params.toString(),
+        { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+      );
+      return res.data.data;
+    }
   }
 
   async deleteVM(node: string, vmId: number): Promise<string> {
     const params = new URLSearchParams();
     params.append("purge", "1");
     params.append("destroy-unreferenced-disks", "1");
+    // skiplock=1 lets us delete even if the VM is still in a locked state
+    // (e.g. clone/snapshot task just finished)
+    params.append("skiplock", "1");
     const res = await this.clientFor(node).delete<ProxmoxResponse<string>>(
       `/nodes/${node}/qemu/${vmId}?${params.toString()}`
     );

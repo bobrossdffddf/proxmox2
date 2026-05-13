@@ -1,37 +1,90 @@
-import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { api, AuthUser, SessionView, TileTemplate } from "../api";
 import { VMTile } from "../components/VMTile";
 
 interface Props { user: AuthUser; onSignOut: () => void }
+
+const PROVISION_ETA_SECONDS = 90;
+
+function SessionProgress({ session }: { session: SessionView }) {
+  const startRef = useRef(new Date(session.createdAt).getTime());
+  const [elapsed, setElapsed] = useState(
+    () => Math.floor((Date.now() - startRef.current) / 1000)
+  );
+  useEffect(() => {
+    const t = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
+    }, 500);
+    return () => clearInterval(t);
+  }, []);
+
+  const pct = Math.min(97, Math.round((elapsed / PROVISION_ETA_SECONDS) * 100));
+  const remaining = Math.max(0, PROVISION_ETA_SECONDS - elapsed);
+  const etaLabel = remaining > 0 ? `~${remaining}s` : "Almost ready…";
+  const stageLabel = session.status === "queued" ? "Queued" : "Provisioning…";
+
+  return (
+    <div className="session-progress">
+      <div className="session-progress-header">
+        <span>{stageLabel}</span>
+        <span>{etaLabel} · {pct}%</span>
+      </div>
+      <div className="session-progress-track">
+        <div className="session-progress-fill" style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
 
 export function Dashboard({ user, onSignOut }: Props) {
   const [templates, setTemplates] = useState<TileTemplate[]>([]);
   const [sessions, setSessions] = useState<SessionView[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
+  const navigate = useNavigate();
+
+  // Track which sessions were previously not-running so we can auto-navigate
+  const prevSessionsRef = useRef<Map<string, string>>(new Map());
 
   const refresh = useCallback(async () => {
     try {
       const s = await api.listSessions();
       setSessions(s);
-    } catch (err) {
+
+      // Auto-navigate to console if a session just became "running"
+      for (const session of s) {
+        const prev = prevSessionsRef.current.get(session.id);
+        if (
+          prev &&
+          prev !== "running" &&
+          session.status === "running"
+        ) {
+          navigate(`/console/${session.id}`);
+          return;
+        }
+      }
+      // Update ref
+      const next = new Map<string, string>();
+      for (const session of s) next.set(session.id, session.status);
+      prevSessionsRef.current = next;
+    } catch {
       // ignore — handled by global 401 redirect
     }
-  }, []);
+  }, [navigate]);
 
   useEffect(() => {
     api.templates().then(setTemplates).catch((err) =>
       setToast({ kind: "error", msg: err.message ?? "Failed to load templates" })
     );
     refresh();
-    const i = setInterval(refresh, 4000);
+    const i = setInterval(refresh, 3000);
     return () => clearInterval(i);
   }, [refresh]);
 
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(null), 4000);
+    const t = setTimeout(() => setToast(null), 5000);
     return () => clearTimeout(t);
   }, [toast]);
 
@@ -39,7 +92,7 @@ export function Dashboard({ user, onSignOut }: Props) {
     setBusy(templateId);
     try {
       await api.requestVm(templateId);
-      setToast({ kind: "ok", msg: "VM requested. It will appear below in a moment." });
+      setToast({ kind: "ok", msg: "VM requested — it will appear below." });
       await refresh();
     } catch (err) {
       setToast({ kind: "error", msg: err instanceof Error ? err.message : "Failed" });
@@ -52,11 +105,15 @@ export function Dashboard({ user, onSignOut }: Props) {
     if (!confirm("Stop this VM? Unsaved work will be lost.")) return;
     try {
       await api.stopSession(publicId);
+      setToast({ kind: "ok", msg: "Stop requested. VM is cleaning up." });
       await refresh();
     } catch (err) {
       setToast({ kind: "error", msg: err instanceof Error ? err.message : "Failed" });
     }
   }, [refresh]);
+
+  const isStarting = (s: SessionView) =>
+    s.status === "queued" || s.status === "provisioning";
 
   return (
     <div className="app-shell">
@@ -98,6 +155,7 @@ export function Dashboard({ user, onSignOut }: Props) {
                   <div className="meta">
                     started {new Date(s.createdAt).toLocaleTimeString()} on {s.proxmoxNode}
                   </div>
+                  {isStarting(s) && <SessionProgress session={s} />}
                 </div>
                 <div><span className={`status-pill ${s.status}`}>{s.status}</span></div>
                 <div className="meta">{s.protocol.toUpperCase()}</div>
@@ -108,6 +166,10 @@ export function Dashboard({ user, onSignOut }: Props) {
                   {s.status === "running" ? (
                     <Link to={`/console/${s.id}`}>
                       <button className="primary">Open</button>
+                    </Link>
+                  ) : isStarting(s) ? (
+                    <Link to={`/console/${s.id}`}>
+                      <button className="primary">Watch</button>
                     </Link>
                   ) : (
                     <button disabled>Open</button>
@@ -124,3 +186,4 @@ export function Dashboard({ user, onSignOut }: Props) {
     </div>
   );
 }
+
