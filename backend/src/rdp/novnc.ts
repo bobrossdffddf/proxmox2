@@ -21,10 +21,10 @@ function vncDesEncrypt(password: string, challenge: Buffer): Buffer {
         ((b & 0x10) >> 1) | ((b & 0x20) >> 3) | ((b & 0x40) >> 5) | ((b & 0x80) >> 7);
     key[i] = b;
   }
-  const c1 = crypto.createCipheriv("des-ecb", key, null);
+  const c1 = crypto.createCipheriv("des-ecb", key, "");
   c1.setAutoPadding(false);
   const r1 = c1.update(challenge.subarray(0, 8));
-  const c2 = crypto.createCipheriv("des-ecb", key, null);
+  const c2 = crypto.createCipheriv("des-ecb", key, "");
   c2.setAutoPadding(false);
   const r2 = c2.update(challenge.subarray(8, 16));
   return Buffer.concat([r1, r2]);

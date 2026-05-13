@@ -18,6 +18,7 @@ FROM node:20-alpine
 WORKDIR /app
 
 ENV NODE_ENV=production
+ENV NODE_OPTIONS=--openssl-legacy-provider
 
 # Reuse the already-resolved, pruned production tree from the builder stage.
 # No second npm install means no second chance to fail.
