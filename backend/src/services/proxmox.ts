@@ -178,10 +178,14 @@ export class ProxmoxClusterClient {
     vmId: number;
     cores: number;
     memoryMb: number;
+    args?: string;
   }): Promise<void> {
     const params = new URLSearchParams();
     params.append("cores", String(opts.cores));
     params.append("memory", String(opts.memoryMb));
+    if (opts.args) {
+      params.append("args", opts.args);
+    }
     await this.clientFor(opts.node).put(
       `/nodes/${opts.node}/qemu/${opts.vmId}/config`,
       params.toString(),
