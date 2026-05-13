@@ -174,6 +174,8 @@ export function publicView(s: SessionRow) {
     createdAt: s.created_at,
     lastActivityAt: s.last_activity_at,
     hardExpiresAt: s.hard_expires_at,
+    guestUsername: s.guest_username,
+    guestPassword: s.guest_password,
   };
 }
 

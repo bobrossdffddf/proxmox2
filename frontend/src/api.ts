@@ -67,6 +67,8 @@ export interface SessionView {
   createdAt: string;
   lastActivityAt: string;
   hardExpiresAt: string;
+  guestUsername: string | null;
+  guestPassword: string | null;
 }
 
 export const api = {
