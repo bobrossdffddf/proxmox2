@@ -30,26 +30,24 @@
  */
 import crypto from "crypto";
 import GuacamoleLite from "guacamole-lite";
+// We use guacamole-lite's own Crypt class to generate tokens so our encryption
+// is byte-for-byte symmetric with their decryption (their decrypt path uses
+// 'ascii' string encoding for the IV which loses the high bit on bytes >=128;
+// matching that exactly is easier than re-implementing it).
+// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+const Crypt = require("guacamole-lite/lib/Crypt");
 import { Server as HttpServer } from "http";
 import { env } from "../config";
 import { logger } from "../services/logger";
 import { getSessionByPublicId, touchHeartbeat } from "../services/sessionManager";
 
-// We generate one random encryption key per backend process. guacamole-lite
-// requires AES-256-CBC, which means a 32-byte key.
+// One random key per backend process. AES-256 needs 32 bytes.
 const CIPHER = "AES-256-CBC";
 const KEY = crypto.randomBytes(32);
+const crypt = new Crypt(CIPHER, KEY);
 
 function encryptToken(payload: object): string {
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv(CIPHER, KEY, iv);
-  const json = JSON.stringify(payload);
-  const enc = Buffer.concat([cipher.update(json, "utf8"), cipher.final()]);
-  const wrapper = {
-    iv: iv.toString("base64"),
-    value: enc.toString("base64"),
-  };
-  return Buffer.from(JSON.stringify(wrapper)).toString("base64");
+  return crypt.encrypt(payload) as string;
 }
 
 interface GuacConnectionConfig {
