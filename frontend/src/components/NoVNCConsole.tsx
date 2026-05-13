@@ -51,7 +51,8 @@ export function NoVNCConsole({ sessionPublicId }: NoVNCConsoleProps) {
 
   return (
     <div className="console-canvas-wrap">
-      <div className="novnc-keybar" aria-label="Console key shortcuts">
+      <aside className="novnc-keybar" aria-label="Console key shortcuts">
+        <div className="novnc-keybar-title">Keyboard</div>
         <button title="Send Ctrl+Alt+Delete" onClick={() => vncRef.current?.sendCtrlAltDel()}>
           Ctrl Alt Del
         </button>
@@ -70,7 +71,7 @@ export function NoVNCConsole({ sessionPublicId }: NoVNCConsoleProps) {
         <button title="Send Escape" onClick={() => sendKey(0xff1b, "Escape")}>
           Esc
         </button>
-      </div>
+      </aside>
       {status !== "Connected" && (
         <div className="console-status-overlay">
           Console: {status}
