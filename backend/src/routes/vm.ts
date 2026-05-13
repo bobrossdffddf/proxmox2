@@ -22,9 +22,17 @@ import {
   touchHeartbeat,
 } from "../services/sessionManager";
 import { cleanupQueue, provisioningQueue } from "../jobs/queues";
+ codex/add-progress-bar-and-vm-staging-features-l2eu01
 import { one } from "../db/client";
 import { redis } from "../services/redis";
 import { claimReadyStagedVm, countLiveStagedVms } from "../services/staging";
+codex/add-progress-bar-and-vm-staging-features-7nboq7
+import { one } from "../db/client";
+import { redis } from "../services/redis";
+import { claimReadyStagedVm, countLiveStagedVms } from "../services/staging";
+import { consumeStagedVm, countLiveStagedVms, getReadyStagedVm } from "../services/staging";
+main
+ main
 
 const router = Router();
 router.use(requireAuth);
@@ -50,6 +58,7 @@ router.post("/request", requestLimiter, async (req, res) => {
     throw new HttpError(404, "unknown template");
   }
 
+ codex/add-progress-bar-and-vm-staging-features-l2eu01
   let userCfg: { max_vms: number; allowed_templates: string } | null = null;
   try {
     userCfg = await one<{ max_vms: number; allowed_templates: string }>(`SELECT max_vms, allowed_templates FROM users WHERE id=$1`, [auth.sub]);
@@ -60,6 +69,8 @@ router.post("/request", requestLimiter, async (req, res) => {
       allowed_templates: legacy?.role === "admin" ? "*" : templateId,
     };
   }
+  const userCfg = await one<{ max_vms: number; allowed_templates: string }>(`SELECT max_vms, allowed_templates FROM users WHERE id=$1`, [auth.sub]);
+ main
   const allowed = (userCfg?.allowed_templates ?? "*").split(",").map((v) => v.trim()).filter(Boolean);
   if (!(allowed.includes("*") || allowed.includes(templateId))) throw new HttpError(403, "You do not have access to this template");
 
@@ -92,20 +103,45 @@ router.post("/request", requestLimiter, async (req, res) => {
     details: { templateId },
   });
 
+ codex/add-progress-bar-and-vm-staging-features-l2eu01
   const staged = await claimReadyStagedVm(templateId);
   if (staged) {
     const claimed = await provisioningQueue.add("provision", { userId: auth.sub, templateId, stagedVm: staged });
+
+ codex/add-progress-bar-and-vm-staging-features-7nboq7
+  const staged = await claimReadyStagedVm(templateId);
+  if (staged) {
+    const claimed = await provisioningQueue.add("provision", { userId: auth.sub, templateId, stagedVm: staged });
+
+  const staged = await getReadyStagedVm(templateId);
+  if (staged) {
+    await consumeStagedVm(staged.id);
+    const claimed = await provisioningQueue.add("provision", { userId: auth.sub, templateId });
+ main
+ main
     const liveStaged = await countLiveStagedVms(templateId);
     if (liveStaged === 0) {
       await provisioningQueue.add("stage", { templateId, staged: true });
     }
+ codex/add-progress-bar-and-vm-staging-features-l2eu01
     await redis.del(requestLockKey);
+ codex/add-progress-bar-and-vm-staging-features-7nboq7
+    await redis.del(requestLockKey);
+
+ main
+ main
     res.status(202).json({ jobId: claimed.id, templateId, status: "queued", source: "staged" });
     return;
   }
 
   const job = await provisioningQueue.add("provision", { userId: auth.sub, templateId });
+ codex/add-progress-bar-and-vm-staging-features-l2eu01
   await redis.del(requestLockKey);
+ codex/add-progress-bar-and-vm-staging-features-7nboq7
+  await redis.del(requestLockKey);
+
+ main
+ main
   const liveStaged = await countLiveStagedVms(templateId);
   if (liveStaged === 0) {
     await provisioningQueue.add("stage", { templateId, staged: true });

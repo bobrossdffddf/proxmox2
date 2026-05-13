@@ -1,5 +1,13 @@
+ codex/add-progress-bar-and-vm-staging-features-l2eu01
 import { one, query } from "../db/client";
 
+ codex/add-progress-bar-and-vm-staging-features-7nboq7
+import { one, query } from "../db/client";
+
+import { many, one, query } from "../db/client";
+ main
+
+ main
 export interface StagedVmRow {
   id: number;
   template_id: string;
@@ -17,6 +25,9 @@ export interface StagedVmRow {
   failure_reason: string | null;
 }
 
+ codex/add-progress-bar-and-vm-staging-features-l2eu01
+ codex/add-progress-bar-and-vm-staging-features-7nboq7
+ main
 export async function claimReadyStagedVm(templateId: string): Promise<StagedVmRow | null> {
   return one<StagedVmRow>(`WITH picked AS (
     SELECT id FROM staged_vms
@@ -28,6 +39,12 @@ export async function claimReadyStagedVm(templateId: string): Promise<StagedVmRo
   DELETE FROM staged_vms
   WHERE id IN (SELECT id FROM picked)
   RETURNING *`, [templateId]);
+ codex/add-progress-bar-and-vm-staging-features-l2eu01
+
+export async function getReadyStagedVm(templateId: string): Promise<StagedVmRow | null> {
+  return one<StagedVmRow>(`SELECT * FROM staged_vms WHERE template_id=$1 AND status='running' ORDER BY created_at ASC LIMIT 1`, [templateId]);
+ main
+ main
 }
 
 export async function countLiveStagedVms(templateId: string): Promise<number> {
@@ -47,3 +64,12 @@ export async function insertStagedVm(data: Omit<StagedVmRow, "id" | "guest_ip" |
 export async function markStagedProvisioning(id: number): Promise<void> { await query(`UPDATE staged_vms SET status='provisioning', updated_at=NOW() WHERE id=$1`, [id]); }
 export async function markStagedRunning(id: number, ip: string): Promise<void> { await query(`UPDATE staged_vms SET status='running', guest_ip=$2, updated_at=NOW() WHERE id=$1`, [id, ip]); }
 export async function markStagedFailed(id: number, reason: string): Promise<void> { await query(`UPDATE staged_vms SET status='failed', failure_reason=$2, updated_at=NOW() WHERE id=$1`, [id, reason]); }
+ codex/add-progress-bar-and-vm-staging-features-l2eu01
+ codex/add-progress-bar-and-vm-staging-features-7nboq7
+
+
+export async function consumeStagedVm(id: number): Promise<void> {
+  await query(`DELETE FROM staged_vms WHERE id=$1`, [id]);
+}
+ main
+ main

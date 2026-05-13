@@ -35,13 +35,25 @@ import {
 } from "../services/sessionManager";
 import { allocateVmid, releaseVmid } from "../services/vmidPool";
 import { cleanupQueue, ProvisioningJobData, provisioningQueue } from "./queues";
+ codex/add-progress-bar-and-vm-staging-features-l2eu01
 import { insertStagedVm, markStagedProvisioning, markStagedRunning } from "../services/staging";
+odex/add-progress-bar-and-vm-staging-features-7nboq7
+import { insertStagedVm, markStagedProvisioning, markStagedRunning } from "../services/staging";
+import { countLiveStagedVms, insertStagedVm, markStagedFailed, markStagedProvisioning, markStagedRunning } from "../services/staging";
+ main
+ main
 
 export function startProvisioningWorker(): Worker<ProvisioningJobData> {
   const worker = new Worker<ProvisioningJobData>(
     "vm-provisioning",
     async (job) => {
+ codex/add-progress-bar-and-vm-staging-features-l2eu01
       const { userId, templateId, staged, stagedVm } = job.data;
+codex/add-progress-bar-and-vm-staging-features-7nboq7
+      const { userId, templateId, staged, stagedVm } = job.data;
+      const { userId, templateId, staged } = job.data;
+main
+ main
       logger.info({ jobId: job.id, userId, templateId }, "provisioning job start");
 
       if (stagedVm && userId) {
