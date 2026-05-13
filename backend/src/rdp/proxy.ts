@@ -156,7 +156,7 @@ export function createRdpProxy() {
   const guacServer = new GuacamoleLite(
     {
       noServer: true,
-    },
+    } as any,
     {
       host: env.GUACD_HOST,
       port: env.GUACD_PORT,
