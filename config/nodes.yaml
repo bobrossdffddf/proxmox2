@@ -1,0 +1,31 @@
+# Proxmox cluster nodes.
+#
+# Each entry needs:
+#   name  - the node's hostname as it appears in the Proxmox API
+#           (Datacenter -> Nodes column "name", or `hostname` on the node)
+#   host  - the IP or DNS name the backend should use to reach the node.
+#           Usually the same as `name` if you have DNS set up; otherwise the IP.
+#   port  - Proxmox API port. Default 8006.
+#   enabled - set to false to drain a node (no new VMs land on it).
+#
+# You can list as many nodes as you want; the load balancer queries all of
+# them and picks the lowest-loaded one each time a student requests a VM.
+#
+# Replace these placeholders with your actual node hostnames.
+
+nodes:
+  - name: pve-node-1
+    host: 192.168.1.10
+    port: 8006
+    enabled: true
+
+  - name: pve-node-2
+    host: 192.168.1.11
+    port: 8006
+    enabled: true
+
+  # Add more nodes here as you bring them online. Example:
+  # - name: pve-node-3
+  #   host: 192.168.1.12
+  #   port: 8006
+  #   enabled: true

@@ -1,0 +1,11 @@
+.env
+node_modules/
+dist/
+build/
+*.log
+.DS_Store
+.vscode/
+.idea/
+postgres-data/
+redis-data/
+coverage/

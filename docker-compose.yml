@@ -1,0 +1,89 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  guacd:
+    image: guacamole/guacd:1.5.5
+    restart: unless-stopped
+    # guacd is the Apache Guacamole protocol translator. It speaks RDP/VNC/SSH
+    # to the VMs and exposes a single binary protocol (the "Guacamole protocol")
+    # over TCP 4822. Our backend bridges that to a browser WebSocket.
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      guacd:
+        condition: service_started
+    environment:
+      NODE_ENV: ${NODE_ENV}
+      LOG_LEVEL: ${LOG_LEVEL}
+      BACKEND_PORT: ${BACKEND_PORT}
+      PUBLIC_URL: ${PUBLIC_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: ${REDIS_URL}
+      PROXMOX_TOKEN_ID: ${PROXMOX_TOKEN_ID}
+      PROXMOX_TOKEN_SECRET: ${PROXMOX_TOKEN_SECRET}
+      PROXMOX_VERIFY_TLS: ${PROXMOX_VERIFY_TLS}
+      GUACD_HOST: ${GUACD_HOST}
+      GUACD_PORT: ${GUACD_PORT}
+      MAX_VMS_PER_USER: ${MAX_VMS_PER_USER}
+      MAX_CLUSTER_VMS: ${MAX_CLUSTER_VMS}
+      SESSION_HARD_TIMEOUT_MINUTES: ${SESSION_HARD_TIMEOUT_MINUTES}
+      SESSION_INACTIVITY_TIMEOUT_MINUTES: ${SESSION_INACTIVITY_TIMEOUT_MINUTES}
+      HEARTBEAT_INTERVAL_SECONDS: ${HEARTBEAT_INTERVAL_SECONDS}
+      VM_ID_RANGE_START: ${VM_ID_RANGE_START}
+      VM_ID_RANGE_END: ${VM_ID_RANGE_END}
+      CONFIG_DIR: /app/config
+    volumes:
+      - ./config:/app/config:ro
+    ports:
+      - "${BACKEND_PORT}:3000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        BACKEND_PORT: ${BACKEND_PORT}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT}:80"
+
+volumes:
+  postgres-data:
+  redis-data:

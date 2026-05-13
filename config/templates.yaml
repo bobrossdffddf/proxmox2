@@ -1,0 +1,65 @@
+# Practice VM templates.
+#
+# Each entry here becomes a tile on the student dashboard. Add an entry,
+# restart the backend container, and the tile appears.
+#
+# Required fields:
+#   id          - stable string identifier, lowercase, used in URLs
+#   name        - tile title shown to students
+#   description - one-line summary shown under the title
+#   icon        - one of: windows, server, linux, network, generic
+#   proxmox_template_id - the VMID of the template on Proxmox (e.g. 9001)
+#   snapshot_name - the snapshot to revert to on cleanup (usually "baseline")
+#   protocol    - "rdp" or "vnc"
+#   port        - usually 3389 for RDP, 5900 for VNC
+#   username    - login the system pre-fills (Windows: usually Administrator)
+#   password    - login the system pre-fills (must match what's in the template)
+#   cpu_cores   - cores allocated to each cloned VM
+#   memory_mb   - RAM allocated to each cloned VM
+#
+# Optional fields:
+#   enabled     - default true; set false to hide a tile without deleting it
+#   color       - hex tint applied to the tile border (defaults to cyan)
+
+templates:
+  - id: windows11_baseline
+    name: Windows 11 — Baseline
+    description: Stock Windows 11 image. Find and fix the misconfigurations.
+    icon: windows
+    proxmox_template_id: 9001
+    snapshot_name: baseline
+    protocol: rdp
+    port: 3389
+    username: Administrator
+    password: ChangeMe123!
+    cpu_cores: 4
+    memory_mb: 4096
+    enabled: true
+
+  - id: server2022_baseline
+    name: Windows Server 2022 — Baseline
+    description: Domain controller hardening practice.
+    icon: server
+    proxmox_template_id: 9002
+    snapshot_name: baseline
+    protocol: rdp
+    port: 3389
+    username: Administrator
+    password: ChangeMe123!
+    cpu_cores: 4
+    memory_mb: 8192
+    enabled: true
+
+  - id: ubuntu22_baseline
+    name: Ubuntu 22.04 — Baseline
+    description: Linux hardening practice.
+    icon: linux
+    proxmox_template_id: 9003
+    snapshot_name: baseline
+    protocol: vnc
+    port: 5900
+    username: cyber
+    password: ChangeMe123!
+    cpu_cores: 2
+    memory_mb: 2048
+    enabled: true
