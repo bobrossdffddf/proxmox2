@@ -379,3 +379,42 @@ h2 {
 }
 .toast.error { border-color: rgba(255, 85, 114, 0.5); color: var(--red); }
 .toast.ok    { border-color: rgba(90, 242, 168, 0.4); color: var(--green); }
+.view-toggle {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-0);
+  padding: 3px;
+  border-radius: 6px;
+  margin-left: 12px;
+}
+.view-toggle button {
+  padding: 4px 10px;
+  font-size: 11px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+}
+.view-toggle button.active {
+  background: var(--bg-2);
+  color: var(--cyan);
+  box-shadow: 0 0 10px var(--cyan-soft);
+}
+.view-toggle button:hover:not(.active) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.console-status-overlay {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: monospace;
+  pointer-events: none;
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+}

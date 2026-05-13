@@ -25,6 +25,7 @@ import adminRouter from "./routes/admin";
 import rdpRouter from "./routes/rdp";
 
 import { mountRdpProxy } from "./rdp/proxy";
+import { mountNoVncProxy } from "./rdp/novnc";
 import { startProvisioningWorker } from "./jobs/provisioningWorker";
 import { startCleanupWorker } from "./jobs/cleanupWorker";
 import { startInactivityMonitor } from "./jobs/inactivityMonitor";
@@ -65,6 +66,7 @@ async function main() {
   // 5. HTTP + WS
   const server = http.createServer(app);
   mountRdpProxy(server);
+  mountNoVncProxy(server);
 
   server.listen(env.BACKEND_PORT, () => {
     logger.info({ port: env.BACKEND_PORT }, "backend listening");

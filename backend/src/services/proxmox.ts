@@ -286,6 +286,24 @@ export class ProxmoxClusterClient {
     }
     throw new Error(`Timed out waiting for guest IP on VM ${vmId} (${node})`);
   }
+  /**
+   * Create a VNC proxy for a VM. Returns the ticket and port needed to
+   * connect to the Proxmox VNC websocket.
+   */
+  async createVncProxy(node: string, vmId: number): Promise<{ ticket: string; port: number }> {
+    const params = new URLSearchParams();
+    params.append("websocket", "1"); // We want a websocket-capable proxy
+
+    const res = await this.clientFor(node).post<ProxmoxResponse<{ ticket: string; port: string }>>(
+      `/nodes/${node}/qemu/${vmId}/vncproxy`,
+      params.toString(),
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+    );
+    return {
+      ticket: res.data.data.ticket,
+      port: parseInt(res.data.data.port, 10),
+    };
+  }
 }
 
 function sleep(ms: number): Promise<void> {
