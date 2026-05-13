@@ -38,40 +38,46 @@ export function createNoVncProxy() {
 
       const proxmoxWsUrl = `wss://${nodeConfig.host}:${nodeConfig.port}/api2/json/nodes/${session.proxmox_node}/qemu/${session.proxmox_vmid}/vncwebsocket?port=${port}&vncticket=${encodeURIComponent(ticket)}`;
 
-      logger.debug({ url: proxmoxWsUrl }, "connecting to proxmox vnc websocket");
-
-      const proxmoxWs = new WebSocket(proxmoxWsUrl, ["binary"], {
+      const proxmoxWs = new WebSocket(proxmoxWsUrl, {
         headers: {
           Authorization: `PVEAPIToken=${env.PROXMOX_TOKEN_ID}=${env.PROXMOX_TOKEN_SECRET}`,
         },
         rejectUnauthorized: env.PROXMOX_VERIFY_TLS,
       });
 
-      // 4. Bidirectional pipe
+      // Force binary handling on both sides
+      proxmoxWs.binaryType = "arraybuffer";
+
+      // 4. Bidirectional binary pipe — preserve frame types exactly
       proxmoxWs.on("open", () => {
-        logger.info({ vmId: session.proxmox_vmid }, "proxmox VNC websocket opened");
+        logger.info({ vmId: session.proxmox_vmid }, "proxmox VNC websocket opened, starting relay");
       });
 
-      ws.on("message", (data: Buffer | string) => {
+      // Browser -> Proxmox: preserve binary/text frame type
+      ws.on("message", (data: Buffer, isBinary: boolean) => {
         if (proxmoxWs.readyState === WebSocket.OPEN) {
-          proxmoxWs.send(data);
+          proxmoxWs.send(data, { binary: isBinary });
         }
       });
 
-      proxmoxWs.on("message", (data: Buffer | string) => {
+      // Proxmox -> Browser: preserve binary/text frame type
+      proxmoxWs.on("message", (data: Buffer, isBinary: boolean) => {
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(data);
+          ws.send(data, { binary: isBinary });
         }
       });
 
-      ws.on("close", () => {
-        logger.debug({ vmId: session.proxmox_vmid }, "browser disconnected from noVNC");
+      // Cleanup
+      ws.on("close", (code) => {
+        logger.debug({ vmId: session.proxmox_vmid, code }, "browser disconnected from noVNC");
         proxmoxWs.close();
       });
 
       proxmoxWs.on("close", (code, reason) => {
         logger.debug({ vmId: session.proxmox_vmid, code, reason: reason?.toString() }, "proxmox VNC websocket closed");
-        ws.close();
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close();
+        }
       });
 
       ws.on("error", (err) => {
@@ -81,7 +87,9 @@ export function createNoVncProxy() {
 
       proxmoxWs.on("error", (err) => {
         logger.error({ err: String(err) }, "noVNC proxmox websocket error");
-        ws.close();
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close();
+        }
       });
 
     } catch (err) {
