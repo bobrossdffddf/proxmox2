@@ -21,7 +21,7 @@ export function createNoVncProxy() {
 
     try {
       // 1. Auth
-      const decoded = verify(token, env.JWT_SECRET) as { sub: number };
+      const decoded = verify(token, env.JWT_SECRET) as unknown as { sub: number };
       const session = await getSessionByPublicId(sessionPublicId);
 
       if (!session) throw new Error("Session not found");
