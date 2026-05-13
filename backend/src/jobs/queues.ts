@@ -9,8 +9,23 @@ import { Queue } from "bullmq";
 import { redis } from "../services/redis";
 
 export interface ProvisioningJobData {
-  userId: number;
   templateId: string;
+  userId?: number;
+  staged?: boolean;
+  stagedVm?: {
+    id: number;
+    template_id: string;
+    template_name: string;
+    protocol: "rdp" | "vnc";
+    proxmox_node: string;
+    proxmox_vmid: number;
+    proxmox_template_id: number;
+    snapshot_name: string;
+    guest_ip: string | null;
+    guest_port: number;
+    guest_username: string | null;
+    guest_password: string | null;
+  };
 }
 
 export interface CleanupJobData {

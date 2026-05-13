@@ -96,6 +96,9 @@ export const api = {
   stopSession: (publicId: string) =>
     request<{ ok: true }>(`/api/vm/sessions/${publicId}`, { method: "DELETE" }),
 
+  adminUsers: () => request<any[]>("/api/admin/users"),
+  createUser: (payload: { username: string; password: string; role: string; maxVms: number; allowedTemplates: string }) => request<any>("/api/admin/users", { method: "POST", body: JSON.stringify(payload) }),
+
   rdpToken: (sessionId: string) =>
     request<{ token: string; sessionPublicId: string }>("/api/rdp/connect", {
       method: "POST",

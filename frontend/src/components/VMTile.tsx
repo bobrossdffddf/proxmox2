@@ -29,6 +29,12 @@ export function VMTile({ tpl, busy, onLaunch }: Props) {
       <div className="icon">{ICONS[tpl.icon]}</div>
       <div className="name">{tpl.name}</div>
       <div className="desc">{tpl.description}</div>
+      {busy && (
+        <div className="tile-startup">
+          <div className="tile-startup-label">Starting VM…</div>
+          <div className="tile-startup-track"><div className="tile-startup-fill" /></div>
+        </div>
+      )}
       <div className="meta">
         <span>{tpl.cpu_cores} vCPU</span>
         <span>{Math.round(tpl.memory_mb / 1024)} GB</span>

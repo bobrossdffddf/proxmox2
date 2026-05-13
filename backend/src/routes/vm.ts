@@ -22,6 +22,9 @@ import {
   touchHeartbeat,
 } from "../services/sessionManager";
 import { cleanupQueue, provisioningQueue } from "../jobs/queues";
+import { one } from "../db/client";
+import { redis } from "../services/redis";
+import { claimReadyStagedVm, countLiveStagedVms } from "../services/staging";
 
 const router = Router();
 router.use(requireAuth);
@@ -47,11 +50,16 @@ router.post("/request", requestLimiter, async (req, res) => {
     throw new HttpError(404, "unknown template");
   }
 
+  const userCfg = await one<{ max_vms: number; allowed_templates: string }>(`SELECT max_vms, allowed_templates FROM users WHERE id=$1`, [auth.sub]);
+  const allowed = (userCfg?.allowed_templates ?? "*").split(",").map((v) => v.trim()).filter(Boolean);
+  if (!(allowed.includes("*") || allowed.includes(templateId))) throw new HttpError(403, "You do not have access to this template");
+
+  const maxForUser = userCfg?.max_vms ?? env.MAX_VMS_PER_USER;
   const active = await listActiveSessionsForUser(auth.sub);
-  if (active.length >= env.MAX_VMS_PER_USER) {
+  if (active.length >= maxForUser) {
     throw new HttpError(
       429,
-      `You already have ${active.length} active VMs (limit ${env.MAX_VMS_PER_USER}). Stop one and try again.`
+      `You already have ${active.length} active VMs (limit ${maxForUser}). Stop one and try again.`
     );
   }
   const cluster = await countActiveSessions();
@@ -62,6 +70,11 @@ router.post("/request", requestLimiter, async (req, res) => {
     );
   }
 
+
+  const requestLockKey = `vm:req-lock:user:${auth.sub}`;
+  const lock = await redis.set(requestLockKey, String(Date.now()), "EX", 5, "NX");
+  if (!lock) throw new HttpError(429, "A VM request is already being processed. Please wait a few seconds.");
+
   await audit({
     userId: auth.sub,
     username: auth.username,
@@ -70,10 +83,24 @@ router.post("/request", requestLimiter, async (req, res) => {
     details: { templateId },
   });
 
-  const job = await provisioningQueue.add("provision", {
-    userId: auth.sub,
-    templateId,
-  });
+  const staged = await claimReadyStagedVm(templateId);
+  if (staged) {
+    const claimed = await provisioningQueue.add("provision", { userId: auth.sub, templateId, stagedVm: staged });
+    const liveStaged = await countLiveStagedVms(templateId);
+    if (liveStaged === 0) {
+      await provisioningQueue.add("stage", { templateId, staged: true });
+    }
+    await redis.del(requestLockKey);
+    res.status(202).json({ jobId: claimed.id, templateId, status: "queued", source: "staged" });
+    return;
+  }
+
+  const job = await provisioningQueue.add("provision", { userId: auth.sub, templateId });
+  await redis.del(requestLockKey);
+  const liveStaged = await countLiveStagedVms(templateId);
+  if (liveStaged === 0) {
+    await provisioningQueue.add("stage", { templateId, staged: true });
+  }
 
   res.status(202).json({
     jobId: job.id,
@@ -117,6 +144,8 @@ router.delete("/sessions/:publicId", async (req, res) => {
     { sessionId: s.id, reason: "user_requested" },
     { jobId: `cleanup-session-${s.id}` }
   );
+
+
 
   await audit({
     userId: auth.sub,

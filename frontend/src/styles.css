@@ -594,3 +594,9 @@ h2 {
   color: var(--text-mute);
   letter-spacing: 0.06em;
 }
+
+.tile-startup { margin-top: 12px; }
+.tile-startup-label { font-size: 12px; color: var(--cyan); margin-bottom: 6px; }
+.tile-startup-track { height: 6px; border-radius: 999px; background: rgba(33,230,242,0.15); overflow: hidden; }
+.tile-startup-fill { height: 100%; width: 45%; background: linear-gradient(90deg, rgba(33,230,242,0.2), var(--cyan)); animation: tile-load 1.2s ease-in-out infinite; }
+@keyframes tile-load { 0% { transform: translateX(-110%);} 100% { transform: translateX(260%);} }

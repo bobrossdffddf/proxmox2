@@ -22,9 +22,11 @@ router.get("/users", async (_req, res) => {
     username: string;
     role: string;
     disabled: boolean;
+    max_vms: number;
+    allowed_templates: string;
     created_at: Date;
     last_login_at: Date | null;
-  }>(`SELECT id, username, role, disabled, created_at, last_login_at FROM users ORDER BY id`);
+  }>(`SELECT id, username, role, disabled, max_vms, allowed_templates, created_at, last_login_at FROM users ORDER BY id`);
   res.json(users);
 });
 
@@ -32,25 +34,27 @@ const createUserSchema = z.object({
   username: z.string().min(1).max(64).regex(/^[a-zA-Z0-9._-]+$/, "username has illegal characters"),
   password: z.string().min(8).max(256),
   role: z.enum(["student", "admin"]).default("student"),
+  maxVms: z.number().int().min(1).max(50).default(1),
+  allowedTemplates: z.string().min(1).max(2000).default("*"),
 });
 
 router.post("/users", async (req, res) => {
   const parse = createUserSchema.safeParse(req.body);
   if (!parse.success) throw new HttpError(400, "invalid user payload", parse.error.flatten());
 
-  const { username, password, role } = parse.data;
+  const { username, password, role, maxVms, allowedTemplates } = parse.data;
   const exists = await one(`SELECT id FROM users WHERE username=$1`, [username]);
   if (exists) throw new HttpError(409, "username already taken");
 
   const hash = await bcrypt.hash(password, 12);
   const row = await one<{ id: number }>(
-    `INSERT INTO users (username, password_hash, role) VALUES ($1,$2,$3) RETURNING id`,
-    [username, hash, role]
+    `INSERT INTO users (username, password_hash, role, max_vms, allowed_templates) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+    [username, hash, role, maxVms, allowedTemplates]
   );
 
   await audit({
     action: "admin.create_user",
-    details: { username, role, newUserId: row?.id },
+    details: { username, role, maxVms, allowedTemplates, newUserId: row?.id },
     ipAddress: req.ip,
   });
 
