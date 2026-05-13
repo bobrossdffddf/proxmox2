@@ -202,6 +202,13 @@ export class ProxmoxClusterClient {
     );
   }
 
+
+  async setDescription(node: string, vmId: number, description: string): Promise<void> {
+    const params = new URLSearchParams();
+    params.append("description", description);
+    await this.clientFor(node).put(`/nodes/${node}/qemu/${vmId}/config`, params.toString(), { headers: { "Content-Type": "application/x-www-form-urlencoded" } });
+  }
+
   async powerOn(node: string, vmId: number): Promise<string> {
     const res = await this.clientFor(node).post<ProxmoxResponse<string>>(
       `/nodes/${node}/qemu/${vmId}/status/start`
