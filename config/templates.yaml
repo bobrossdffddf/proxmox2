@@ -9,7 +9,8 @@
 #   description - one-line summary shown under the title
 #   icon        - one of: windows, server, linux, network, generic
 #   proxmox_template_id - the VMID of the template on Proxmox (e.g. 9001)
-#   snapshot_name - the snapshot to revert to on cleanup (usually "baseline")
+#   snapshot_name - optional; leave blank/omit for imported Proxmox templates.
+#                   Cleanup deletes clones, so snapshots are not required.
 #   protocol    - "rdp" or "vnc"
 #   port        - usually 3389 for RDP, 5900 for VNC
 #   username    - login the system pre-fills (Windows: usually Administrator)

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, AuthUser, SessionView, TileTemplate } from "../api";
+import { Announcement, api, AuthUser, SessionView, TileTemplate } from "../api";
 import { VMTile } from "../components/VMTile";
 
 interface Props { user: AuthUser; onSignOut: () => void }
@@ -40,6 +40,7 @@ function SessionProgress({ session }: { session: SessionView }) {
 export function Dashboard({ user, onSignOut }: Props) {
   const [templates, setTemplates] = useState<TileTemplate[]>([]);
   const [sessions, setSessions] = useState<SessionView[]>([]);
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
   const navigate = useNavigate();
@@ -77,6 +78,7 @@ export function Dashboard({ user, onSignOut }: Props) {
     api.templates().then(setTemplates).catch((err) =>
       setToast({ kind: "error", msg: err.message ?? "Failed to load templates" })
     );
+    api.announcements().then(setAnnouncements).catch(() => undefined);
     refresh();
     const i = setInterval(refresh, 3000);
     return () => clearInterval(i);
@@ -130,8 +132,19 @@ export function Dashboard({ user, onSignOut }: Props) {
       <main className="content">
         <h1>Practice images</h1>
         <p className="subtitle">
-          Click a tile to open a ready sandbox. Snapshots reset on exit, so it's safe to break things.
+          Click a tile to open a ready sandbox. Each VM is deleted on exit, so every launch is fresh.
         </p>
+
+        {announcements.length > 0 && (
+          <div className="announcement-stack">
+            {announcements.map((announcement) => (
+              <div key={announcement.id} className="announcement-banner">
+                <div className="name">{announcement.title}</div>
+                <div className="meta">{announcement.message}</div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {templates.length === 0 ? (
           <div className="empty">

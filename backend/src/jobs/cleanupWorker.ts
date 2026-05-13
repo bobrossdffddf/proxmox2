@@ -56,17 +56,15 @@ export function startCleanupWorker(): Worker<CleanupJobData> {
           logger.warn({ vmId, err: String(err) }, "powerOff failed, continuing");
         }
 
-        // 2. Rollback to baseline snapshot. This is the contract: each
-        // template carries a snapshot we trust.
-        try {
-          const rollbackUpid = await proxmox.rollbackToSnapshot(node, vmId, snapshot);
-          await proxmox.waitForTask(node, rollbackUpid, 120_000);
-        } catch (err) {
-          // If the snapshot doesn't exist on the clone (which is normal for
-          // linked clones until they're snapshotted explicitly), we just skip
-          // and proceed to deletion. Deleting the clone returns the state to
-          // the template anyway, since linked clones diff against the template.
-          logger.debug({ vmId, err: String(err) }, "snapshot rollback skipped");
+        // 2. Optional rollback. Template-only imported images may not have
+        // snapshots, and deletion still fully removes the per-user clone.
+        if (snapshot && !["none", "off", "disabled"].includes(snapshot.toLowerCase())) {
+          try {
+            const rollbackUpid = await proxmox.rollbackToSnapshot(node, vmId, snapshot);
+            await proxmox.waitForTask(node, rollbackUpid, 120_000);
+          } catch (err) {
+            logger.debug({ vmId, snapshot, err: String(err) }, "snapshot rollback skipped");
+          }
         }
 
         // 3. Delete clone

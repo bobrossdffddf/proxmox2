@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { AdminSession, AdminUser, api, AuditLog, StagedVm } from "../api";
+import { AdminSession, AdminUser, Announcement, api, AuditLog, StagedVm } from "../api";
 
-type Tab = "users" | "sessions" | "staging" | "logs";
+type Tab = "users" | "sessions" | "staging" | "announcements" | "logs";
 
 export function Admin() {
   const [tab, setTab] = useState<Tab>("users");
@@ -11,6 +11,7 @@ export function Admin() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [sessions, setSessions] = useState<AdminSession[]>([]);
   const [stagedVms, setStagedVms] = useState<StagedVm[]>([]);
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [form, setForm] = useState({
     username: "",
@@ -19,6 +20,7 @@ export function Admin() {
     maxVms: 1,
     allowedTemplates: "*",
   });
+  const [announcementForm, setAnnouncementForm] = useState({ title: "", message: "" });
 
   const selectedUser = useMemo(
     () => users.find((user) => user.id === selectedUserId) ?? users[0] ?? null,
@@ -43,10 +45,15 @@ export function Admin() {
     setStagedVms(await api.stagedVms());
   };
 
+  const loadAnnouncements = async () => {
+    setAnnouncements(await api.adminAnnouncements());
+  };
+
   useEffect(() => {
     loadUsers().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load users" }));
     loadSessions().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load sessions" }));
     loadStaged().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load staging" }));
+    loadAnnouncements().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load announcements" }));
   }, []);
 
   useEffect(() => {
@@ -122,6 +129,31 @@ export function Admin() {
     }
   };
 
+  const stopAllSessions = async () => {
+    if (!confirm("Stop and delete every active user VM?")) return;
+    try {
+      const result = await api.stopAllAdminSessions();
+      await loadSessions();
+      setMessage({ kind: "ok", text: `Cleanup requested for ${result.count} active VM(s).` });
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof Error ? err.message : "Failed to stop active VMs" });
+    }
+  };
+
+  const deleteAllVms = async () => {
+    if (!confirm("Delete every tracked active and staged VM? This will also empty warm staging inventory.")) return;
+    try {
+      const result = await api.deleteAllVms();
+      await Promise.all([loadSessions(), loadStaged()]);
+      setMessage({
+        kind: "ok",
+        text: `Queued ${result.activeQueued} active VM(s), destroyed ${result.stagedDestroyed} staged VM(s).`,
+      });
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof Error ? err.message : "Failed to delete VMs" });
+    }
+  };
+
   const refillStaging = async () => {
     try {
       await api.ensureStaging();
@@ -140,6 +172,27 @@ export function Admin() {
       setMessage({ kind: "ok", text: "Staged VM destroyed and replacement requested." });
     } catch (err) {
       setMessage({ kind: "error", text: err instanceof Error ? err.message : "Failed to destroy staged VM" });
+    }
+  };
+
+  const createAnnouncement = async () => {
+    try {
+      await api.createAnnouncement({ ...announcementForm, active: true });
+      setAnnouncementForm({ title: "", message: "" });
+      await loadAnnouncements();
+      setMessage({ kind: "ok", text: "Announcement posted." });
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof Error ? err.message : "Failed to post announcement" });
+    }
+  };
+
+  const deactivateAnnouncement = async (announcement: Announcement) => {
+    try {
+      await api.deactivateAnnouncement(announcement.id);
+      await loadAnnouncements();
+      setMessage({ kind: "ok", text: "Announcement hidden." });
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof Error ? err.message : "Failed to hide announcement" });
     }
   };
 
@@ -162,6 +215,7 @@ export function Admin() {
             <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}>Users</button>
             <button className={tab === "sessions" ? "active" : ""} onClick={() => setTab("sessions")}>Sessions</button>
             <button className={tab === "staging" ? "active" : ""} onClick={() => setTab("staging")}>Staging</button>
+            <button className={tab === "announcements" ? "active" : ""} onClick={() => setTab("announcements")}>Announcements</button>
             <button className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")}>Logs</button>
           </div>
         </div>
@@ -212,7 +266,11 @@ export function Admin() {
           <section className="admin-panel">
             <div className="admin-log-toolbar">
               <h2>Active Sessions</h2>
-              <button onClick={loadSessions}>Refresh</button>
+              <div className="admin-toolbar-actions">
+                <button onClick={loadSessions}>Refresh</button>
+                <button className="danger" onClick={stopAllSessions}>Stop All</button>
+                <button className="danger" onClick={deleteAllVms}>Delete All VMs</button>
+              </div>
             </div>
             {sessions.length === 0 ? (
               <div className="empty">No active sessions.</div>
@@ -242,6 +300,7 @@ export function Admin() {
               <div className="admin-toolbar-actions">
                 <button onClick={loadStaged}>Refresh</button>
                 <button className="primary" onClick={refillStaging}>Refill</button>
+                <button className="danger" onClick={deleteAllVms}>Delete All VMs</button>
               </div>
             </div>
             {stagedVms.length === 0 ? (
@@ -262,6 +321,54 @@ export function Admin() {
               </div>
             )}
           </section>
+        ) : tab === "announcements" ? (
+          <>
+            <section className="admin-panel">
+              <h2>Make Announcement</h2>
+              <div className="announcement-form">
+                <input
+                  placeholder="title"
+                  value={announcementForm.title}
+                  onChange={(e) => setAnnouncementForm({ ...announcementForm, title: e.target.value })}
+                />
+                <textarea
+                  placeholder="message"
+                  value={announcementForm.message}
+                  onChange={(e) => setAnnouncementForm({ ...announcementForm, message: e.target.value })}
+                />
+                <button className="primary" onClick={createAnnouncement}>Post</button>
+              </div>
+            </section>
+            <section className="admin-panel">
+              <div className="admin-log-toolbar">
+                <h2>Announcements</h2>
+                <button onClick={loadAnnouncements}>Refresh</button>
+              </div>
+              {announcements.length === 0 ? (
+                <div className="empty">No announcements yet.</div>
+              ) : (
+                <div className="admin-session-list">
+                  {announcements.map((announcement) => (
+                    <div key={announcement.id} className="admin-session-row">
+                      <div>
+                        <div className="name">{announcement.title}</div>
+                        <div className="meta">{announcement.message}</div>
+                      </div>
+                      <span className={`status-pill ${announcement.active ? "running" : "stopped"}`}>
+                        {announcement.active ? "active" : "hidden"}
+                      </span>
+                      <div className="meta">{new Date(announcement.created_at).toLocaleString()}</div>
+                      {announcement.active ? (
+                        <button onClick={() => deactivateAnnouncement(announcement)}>Hide</button>
+                      ) : (
+                        <button disabled>Hidden</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
         ) : (
           <section className="admin-panel">
             <div className="admin-log-toolbar">

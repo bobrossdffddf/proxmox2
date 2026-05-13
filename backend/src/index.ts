@@ -23,6 +23,7 @@ import templatesRouter from "./routes/templates";
 import vmRouter from "./routes/vm";
 import adminRouter from "./routes/admin";
 import rdpRouter from "./routes/rdp";
+import announcementsRouter from "./routes/announcements";
 
 import { createRdpProxy } from "./rdp/proxy";
 import { createNoVncProxy } from "./rdp/novnc";
@@ -57,6 +58,7 @@ async function main() {
   app.use("/api/vm", vmRouter);
   app.use("/api/admin", adminRouter);
   app.use("/api/rdp", rdpRouter);
+  app.use("/api/announcements", announcementsRouter);
 
   app.use(errorHandler);
 

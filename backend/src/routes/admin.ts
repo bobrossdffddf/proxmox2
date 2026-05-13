@@ -20,6 +20,27 @@ import { releaseVmid } from "../services/vmidPool";
 const router = Router();
 router.use(requireAuth, requireAdmin);
 
+async function destroyStagedVmById(id: number): Promise<{ vmId: number; templateId: string }> {
+  const staged = await getStagedVmById(id);
+  if (!staged) throw new HttpError(404, "staged VM not found");
+
+  await deleteStagedVm(id);
+  try {
+    try {
+      const stopUpid = await proxmox.powerOff(staged.proxmox_node, staged.proxmox_vmid, true);
+      await proxmox.waitForTask(staged.proxmox_node, stopUpid, 60_000).catch(() => undefined);
+    } catch {
+      // Already off or unreachable is fine; deletion is the important step.
+    }
+    const deleteUpid = await proxmox.deleteVM(staged.proxmox_node, staged.proxmox_vmid);
+    await proxmox.waitForTask(staged.proxmox_node, deleteUpid, 120_000);
+    await releaseVmid(staged.proxmox_vmid);
+    return { vmId: staged.proxmox_vmid, templateId: staged.template_id };
+  } catch (err) {
+    throw new HttpError(500, String(err));
+  }
+}
+
 router.get("/users", async (_req, res) => {
   const users = await many<{
     id: number;
@@ -167,6 +188,24 @@ router.post("/sessions/:id/stop", async (req, res) => {
   res.json({ ok: true });
 });
 
+router.post("/sessions/stop-all", async (req, res) => {
+  const sessions = await listAllLiveSessions();
+  for (const session of sessions) {
+    await cleanupQueue.add(
+      "admin-stop-all",
+      { sessionId: session.id, reason: "admin_requested" },
+      { jobId: `admin-cleanup-session-${session.id}` }
+    );
+  }
+
+  await audit({
+    action: "admin.stop_all_sessions",
+    details: { count: sessions.length },
+    ipAddress: req.ip,
+  });
+  res.json({ ok: true, count: sessions.length });
+});
+
 router.get("/staged", async (_req, res) => {
   res.json(await listStagedVms());
 });
@@ -181,35 +220,108 @@ router.delete("/staged/:id", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "invalid staged VM id");
 
-  const staged = await getStagedVmById(id);
-  if (!staged) throw new HttpError(404, "staged VM not found");
-
-  await deleteStagedVm(id);
   try {
-    try {
-      const stopUpid = await proxmox.powerOff(staged.proxmox_node, staged.proxmox_vmid, true);
-      await proxmox.waitForTask(staged.proxmox_node, stopUpid, 60_000).catch(() => undefined);
-    } catch {
-      // Already off or unreachable is fine; deletion is the important step.
-    }
-    const deleteUpid = await proxmox.deleteVM(staged.proxmox_node, staged.proxmox_vmid);
-    await proxmox.waitForTask(staged.proxmox_node, deleteUpid, 120_000);
-    await releaseVmid(staged.proxmox_vmid);
+    const destroyed = await destroyStagedVmById(id);
+    await audit({
+      action: "admin.destroy_staged",
+      details: { id, templateId: destroyed.templateId, vmId: destroyed.vmId },
+      ipAddress: req.ip,
+    });
   } catch (err) {
     await audit({
       action: "admin.destroy_staged_failed",
-      details: { id, vmId: staged.proxmox_vmid, error: String(err) },
+      details: { id, error: String(err) },
       ipAddress: req.ip,
     });
     throw err;
   }
 
+  await ensureAllStagedVms();
+  res.json({ ok: true });
+});
+
+router.delete("/vms/all", async (req, res) => {
+  const sessions = await listAllLiveSessions();
+  for (const session of sessions) {
+    await cleanupQueue.add(
+      "admin-delete-all",
+      { sessionId: session.id, reason: "admin_requested" },
+      { jobId: `admin-cleanup-session-${session.id}` }
+    );
+  }
+
+  const staged = await listStagedVms();
+  let stagedDestroyed = 0;
+  for (const vm of staged) {
+    try {
+      await destroyStagedVmById(vm.id);
+      stagedDestroyed += 1;
+    } catch (err) {
+      await audit({
+        action: "admin.delete_all_staged_failed",
+        details: { id: vm.id, vmId: vm.proxmox_vmid, error: String(err) },
+        ipAddress: req.ip,
+      });
+    }
+  }
+
   await audit({
-    action: "admin.destroy_staged",
-    details: { id, templateId: staged.template_id, vmId: staged.proxmox_vmid },
+    action: "admin.delete_all_vms",
+    details: { activeQueued: sessions.length, stagedDestroyed },
     ipAddress: req.ip,
   });
-  await ensureAllStagedVms();
+  res.json({ ok: true, activeQueued: sessions.length, stagedDestroyed });
+});
+
+const announcementSchema = z.object({
+  title: z.string().min(1).max(120),
+  message: z.string().min(1).max(2000),
+  active: z.boolean().default(true),
+});
+
+router.get("/announcements", async (_req, res) => {
+  const announcements = await many<{
+    id: number;
+    title: string;
+    message: string;
+    active: boolean;
+    created_by: number | null;
+    created_at: Date;
+  }>(
+    `SELECT id, title, message, active, created_by, created_at
+     FROM announcements
+     ORDER BY created_at DESC
+     LIMIT 100`
+  );
+  res.json(announcements);
+});
+
+router.post("/announcements", async (req, res) => {
+  const parse = announcementSchema.safeParse(req.body);
+  if (!parse.success) throw new HttpError(400, "invalid announcement payload", parse.error.flatten());
+  const auth = (req as unknown as AuthedRequest).auth;
+
+  const row = await one<{ id: number }>(
+    `INSERT INTO announcements (title, message, active, created_by)
+     VALUES ($1,$2,$3,$4)
+     RETURNING id`,
+    [parse.data.title, parse.data.message, parse.data.active, auth.sub]
+  );
+  await audit({
+    userId: auth.sub,
+    username: auth.username,
+    action: "admin.create_announcement",
+    details: { id: row?.id, title: parse.data.title, active: parse.data.active },
+    ipAddress: req.ip,
+  });
+  res.status(201).json({ id: row?.id, ...parse.data });
+});
+
+router.post("/announcements/:id/deactivate", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "invalid announcement id");
+  await query(`UPDATE announcements SET active=false WHERE id=$1`, [id]);
+  await audit({ action: "admin.deactivate_announcement", details: { id }, ipAddress: req.ip });
   res.json({ ok: true });
 });
 

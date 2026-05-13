@@ -87,6 +87,14 @@ export interface StagedVm {
   failure_reason: string | null;
 }
 
+export interface Announcement {
+  id: number;
+  title: string;
+  message: string;
+  active?: boolean;
+  created_at: string;
+}
+
 export interface TileTemplate {
   id: string;
   name: string;
@@ -140,6 +148,7 @@ export const api = {
     }),
   stopSession: (publicId: string) =>
     request<{ ok: true }>(`/api/vm/sessions/${publicId}`, { method: "DELETE" }),
+  announcements: () => request<Announcement[]>("/api/announcements"),
 
   adminUsers: () => request<AdminUser[]>("/api/admin/users"),
   createUser: (payload: { username: string; password: string; role: string; maxVms: number; allowedTemplates: string }) => request<AdminUser>("/api/admin/users", { method: "POST", body: JSON.stringify(payload) }),
@@ -153,10 +162,19 @@ export const api = {
   adminSessions: () => request<AdminSession[]>("/api/admin/sessions"),
   stopAdminSession: (id: number) =>
     request<{ ok: true }>(`/api/admin/sessions/${id}/stop`, { method: "POST" }),
+  stopAllAdminSessions: () =>
+    request<{ ok: true; count: number }>("/api/admin/sessions/stop-all", { method: "POST" }),
   stagedVms: () => request<StagedVm[]>("/api/admin/staged"),
   ensureStaging: () => request<{ ok: true }>("/api/admin/staged/ensure", { method: "POST" }),
   destroyStagedVm: (id: number) =>
     request<{ ok: true }>(`/api/admin/staged/${id}`, { method: "DELETE" }),
+  deleteAllVms: () =>
+    request<{ ok: true; activeQueued: number; stagedDestroyed: number }>("/api/admin/vms/all", { method: "DELETE" }),
+  adminAnnouncements: () => request<Announcement[]>("/api/admin/announcements"),
+  createAnnouncement: (payload: { title: string; message: string; active: boolean }) =>
+    request<Announcement>("/api/admin/announcements", { method: "POST", body: JSON.stringify(payload) }),
+  deactivateAnnouncement: (id: number) =>
+    request<{ ok: true }>(`/api/admin/announcements/${id}/deactivate`, { method: "POST" }),
 
   rdpToken: (sessionId: string) =>
     request<{ token: string; sessionPublicId: string }>("/api/rdp/connect", {

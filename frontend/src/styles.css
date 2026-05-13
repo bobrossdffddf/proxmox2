@@ -78,7 +78,7 @@ button.danger:hover {
   box-shadow: 0 0 0 1px rgba(255, 85, 114, 0.2);
 }
 
-input, select {
+input, select, textarea {
   font-family: inherit;
   font-size: 14px;
   background: var(--bg-1);
@@ -89,6 +89,15 @@ input, select {
   width: 100%;
 }
 input:focus, select:focus {
+  outline: none;
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 3px var(--cyan-soft);
+}
+textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+textarea:focus {
   outline: none;
   border-color: var(--cyan);
   box-shadow: 0 0 0 3px var(--cyan-soft);
@@ -379,6 +388,28 @@ h2 {
 }
 .toast.error { border-color: rgba(255, 85, 114, 0.5); color: var(--red); }
 .toast.ok    { border-color: rgba(90, 242, 168, 0.4); color: var(--green); }
+.announcement-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 22px;
+}
+.announcement-banner {
+  background: rgba(255, 184, 74, 0.08);
+  border: 1px solid rgba(255, 184, 74, 0.32);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.announcement-banner .name {
+  font-weight: 600;
+  color: var(--amber);
+  margin-bottom: 3px;
+}
+.announcement-banner .meta {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
 .view-toggle {
   display: flex;
   gap: 4px;
@@ -630,6 +661,12 @@ h2 {
 .admin-panel {
   margin-top: 18px;
 }
+.announcement-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.5fr) minmax(260px, 1fr) 100px;
+  gap: 10px;
+  align-items: start;
+}
 .admin-create-grid {
   display: grid;
   grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) 130px 110px minmax(180px, 1fr) 120px;
@@ -723,6 +760,7 @@ h2 {
     align-items: stretch;
   }
   .admin-create-grid,
+  .announcement-form,
   .admin-user-row,
   .admin-session-row,
   .admin-log-row {

@@ -1,13 +1,12 @@
 # Building a template VM
 
-A "template" in WCTARange is a regular VM on your Proxmox cluster that:
+A "template" in WCTARange is a Proxmox template VM on your cluster that:
 
 1. Has the QEMU guest agent installed and running.
 2. Listens for RDP (Windows) or VNC (Linux).
-3. Has a named snapshot we revert to on cleanup.
-4. Is marked as a Proxmox template (right-click VM -> Convert to template).
+3. Is marked as a Proxmox template (right-click VM -> Convert to template).
 
-Templates aren't started directly. WCTARange clones them on demand.
+Templates aren't started directly. WCTARange keeps booted clones staged, assigns each clone to exactly one user, and deletes that clone when the user is done. Snapshots are optional. If `snapshot_name` is blank or omitted in `config/templates.yaml`, cleanup skips rollback and simply deletes the clone.
 
 ## Windows 11 / Server 2022 template
 
@@ -19,7 +18,7 @@ Templates aren't started directly. WCTARange clones them on demand.
    - Set a local Administrator password matching what you'll put in `templates.yaml`.
    - If you don't want to deal with Network Level Authentication, disable NLA (System Properties -> Remote -> uncheck "Allow connections only from computers running Remote Desktop with Network Level Authentication"). Guacamole can handle NLA but disabling it removes a class of credential issues.
 5. Configure Windows for DHCP (the default).
-6. Shut down cleanly. Take a snapshot named `baseline`.
+6. Shut down cleanly.
 7. Right-click the VM in Proxmox and **Convert to template**.
 8. Note the VMID (e.g. `9001`). Put it in `config/templates.yaml` under `proxmox_template_id`.
 
@@ -30,7 +29,7 @@ Templates aren't started directly. WCTARange clones them on demand.
 3. `systemctl enable --now qemu-guest-agent`.
 4. Create a `cyber` user with a known password.
 5. Configure VNC to listen on `:0` (port 5900). One simple way: a systemd service that runs `x11vnc -forever -display :1 -passwd ChangeMe123!`.
-6. `shutdown -h now`. Snapshot as `baseline`. Convert to template.
+6. `shutdown -h now`. Convert to template.
 
 ## Important caveats
 

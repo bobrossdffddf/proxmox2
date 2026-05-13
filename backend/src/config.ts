@@ -69,7 +69,7 @@ const templateSchema = z.object({
   description: z.string().default(""),
   icon: z.enum(["windows", "server", "linux", "network", "generic"]).default("generic"),
   proxmox_template_id: z.number().int().positive(),
-  snapshot_name: z.string().default("baseline"),
+  snapshot_name: z.string().nullable().optional().transform((value) => value ?? ""),
   protocol: z.enum(["rdp", "vnc"]),
   port: z.number().int().default(3389),
   username: z.string(),

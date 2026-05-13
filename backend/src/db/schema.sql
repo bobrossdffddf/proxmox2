@@ -86,6 +86,16 @@ CREATE INDEX IF NOT EXISTS audit_user_idx    ON audit_log(user_id);
 CREATE INDEX IF NOT EXISTS audit_action_idx  ON audit_log(action);
 CREATE INDEX IF NOT EXISTS audit_created_idx ON audit_log(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS announcements (
+  id          BIGSERIAL PRIMARY KEY,
+  title       VARCHAR(120) NOT NULL,
+  message     TEXT NOT NULL,
+  active      BOOLEAN NOT NULL DEFAULT TRUE,
+  created_by  INT REFERENCES users(id) ON DELETE SET NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS announcements_active_created_idx ON announcements(active, created_at DESC);
 
 -- Backfill migrations for existing deployments
 
