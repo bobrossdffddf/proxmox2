@@ -12,6 +12,7 @@ export interface ProvisioningJobData {
   templateId: string;
   userId?: number;
   staged?: boolean;
+codex/add-progress-bar-and-vm-staging-features-7nboq7
   stagedVm?: {
     id: number;
     template_id: string;
@@ -26,6 +27,8 @@ export interface ProvisioningJobData {
     guest_username: string | null;
     guest_password: string | null;
   };
+
+main
 }
 
 export interface CleanupJobData {

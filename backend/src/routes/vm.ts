@@ -22,9 +22,12 @@ import {
   touchHeartbeat,
 } from "../services/sessionManager";
 import { cleanupQueue, provisioningQueue } from "../jobs/queues";
+codex/add-progress-bar-and-vm-staging-features-7nboq7
 import { one } from "../db/client";
 import { redis } from "../services/redis";
 import { claimReadyStagedVm, countLiveStagedVms } from "../services/staging";
+import { consumeStagedVm, countLiveStagedVms, getReadyStagedVm } from "../services/staging";
+main
 
 const router = Router();
 router.use(requireAuth);
@@ -83,20 +86,33 @@ router.post("/request", requestLimiter, async (req, res) => {
     details: { templateId },
   });
 
+ codex/add-progress-bar-and-vm-staging-features-7nboq7
   const staged = await claimReadyStagedVm(templateId);
   if (staged) {
     const claimed = await provisioningQueue.add("provision", { userId: auth.sub, templateId, stagedVm: staged });
+
+  const staged = await getReadyStagedVm(templateId);
+  if (staged) {
+    await consumeStagedVm(staged.id);
+    const claimed = await provisioningQueue.add("provision", { userId: auth.sub, templateId });
+ main
     const liveStaged = await countLiveStagedVms(templateId);
     if (liveStaged === 0) {
       await provisioningQueue.add("stage", { templateId, staged: true });
     }
+ codex/add-progress-bar-and-vm-staging-features-7nboq7
     await redis.del(requestLockKey);
+
+ main
     res.status(202).json({ jobId: claimed.id, templateId, status: "queued", source: "staged" });
     return;
   }
 
   const job = await provisioningQueue.add("provision", { userId: auth.sub, templateId });
+ codex/add-progress-bar-and-vm-staging-features-7nboq7
   await redis.del(requestLockKey);
+
+ main
   const liveStaged = await countLiveStagedVms(templateId);
   if (liveStaged === 0) {
     await provisioningQueue.add("stage", { templateId, staged: true });
