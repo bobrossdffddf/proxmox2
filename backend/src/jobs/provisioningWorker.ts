@@ -26,6 +26,7 @@ import { redis } from "../services/redis";
 import {
   countActiveSessions,
   createPendingSession,
+  createRunningSessionFromStaged,
   listActiveSessionsForUser,
   logSessionEvent,
   markSessionFailed,
@@ -34,14 +35,43 @@ import {
 } from "../services/sessionManager";
 import { allocateVmid, releaseVmid } from "../services/vmidPool";
 import { cleanupQueue, ProvisioningJobData, provisioningQueue } from "./queues";
+odex/add-progress-bar-and-vm-staging-features-7nboq7
+import { insertStagedVm, markStagedProvisioning, markStagedRunning } from "../services/staging";
 import { countLiveStagedVms, insertStagedVm, markStagedFailed, markStagedProvisioning, markStagedRunning } from "../services/staging";
+ main
 
 export function startProvisioningWorker(): Worker<ProvisioningJobData> {
   const worker = new Worker<ProvisioningJobData>(
     "vm-provisioning",
     async (job) => {
+codex/add-progress-bar-and-vm-staging-features-7nboq7
+      const { userId, templateId, staged, stagedVm } = job.data;
       const { userId, templateId, staged } = job.data;
+main
       logger.info({ jobId: job.id, userId, templateId }, "provisioning job start");
+
+      if (stagedVm && userId) {
+        const s = await createRunningSessionFromStaged({
+          userId,
+          templateId: stagedVm.template_id,
+          templateName: stagedVm.template_name,
+          protocol: stagedVm.protocol,
+          proxmoxNode: stagedVm.proxmox_node,
+          proxmoxVmid: stagedVm.proxmox_vmid,
+          proxmoxTemplateId: stagedVm.proxmox_template_id,
+          snapshotName: stagedVm.snapshot_name,
+          guestIp: stagedVm.guest_ip,
+          guestPort: stagedVm.guest_port,
+          guestUsername: stagedVm.guest_username,
+          guestPassword: stagedVm.guest_password,
+        });
+        await cleanupQueue.add("cleanup", { sessionId: s.id, reason: "hard_timeout" }, { delay: env.SESSION_HARD_TIMEOUT_MINUTES * 60 * 1000 });
+        if ((await countActiveSessions()) < env.MAX_CLUSTER_VMS) {
+          await provisioningQueue.add("stage", { templateId: stagedVm.template_id, staged: true });
+        }
+        return { sessionId: s.id, publicId: s.public_id, source: "staged" };
+      }
+
 
       // 1. Re-check quotas
       if (!staged) {

@@ -12,6 +12,23 @@ export interface ProvisioningJobData {
   templateId: string;
   userId?: number;
   staged?: boolean;
+codex/add-progress-bar-and-vm-staging-features-7nboq7
+  stagedVm?: {
+    id: number;
+    template_id: string;
+    template_name: string;
+    protocol: "rdp" | "vnc";
+    proxmox_node: string;
+    proxmox_vmid: number;
+    proxmox_template_id: number;
+    snapshot_name: string;
+    guest_ip: string | null;
+    guest_port: number;
+    guest_username: string | null;
+    guest_password: string | null;
+  };
+
+main
 }
 
 export interface CleanupJobData {

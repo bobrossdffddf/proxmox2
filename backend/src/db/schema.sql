@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS users (
   role          VARCHAR(16) NOT NULL DEFAULT 'student',
   -- 'student' | 'admin'
   disabled      BOOLEAN NOT NULL DEFAULT FALSE,
+  max_vms             INT NOT NULL DEFAULT 1,
+  allowed_templates   TEXT NOT NULL DEFAULT '*',
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_login_at TIMESTAMPTZ
 );
