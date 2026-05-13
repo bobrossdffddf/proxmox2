@@ -9,8 +9,9 @@ import { Queue } from "bullmq";
 import { redis } from "../services/redis";
 
 export interface ProvisioningJobData {
-  userId: number;
   templateId: string;
+  userId?: number;
+  staged?: boolean;
 }
 
 export interface CleanupJobData {

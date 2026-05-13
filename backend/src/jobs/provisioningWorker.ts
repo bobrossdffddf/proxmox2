@@ -33,19 +33,23 @@ import {
   markSessionRunning,
 } from "../services/sessionManager";
 import { allocateVmid, releaseVmid } from "../services/vmidPool";
-import { cleanupQueue, ProvisioningJobData } from "./queues";
+import { cleanupQueue, ProvisioningJobData, provisioningQueue } from "./queues";
+import { countLiveStagedVms, insertStagedVm, markStagedFailed, markStagedProvisioning, markStagedRunning } from "../services/staging";
 
 export function startProvisioningWorker(): Worker<ProvisioningJobData> {
   const worker = new Worker<ProvisioningJobData>(
     "vm-provisioning",
     async (job) => {
-      const { userId, templateId } = job.data;
+      const { userId, templateId, staged } = job.data;
       logger.info({ jobId: job.id, userId, templateId }, "provisioning job start");
 
       // 1. Re-check quotas
-      const active = await listActiveSessionsForUser(userId);
-      if (active.length >= env.MAX_VMS_PER_USER) {
-        throw new Error(`User already has ${active.length}/${env.MAX_VMS_PER_USER} active VMs`);
+      if (!staged) {
+        if (!userId) throw new Error("userId required for user provisioning");
+        const active = await listActiveSessionsForUser(userId);
+        if (active.length >= env.MAX_VMS_PER_USER) {
+          throw new Error(`User already has ${active.length}/${env.MAX_VMS_PER_USER} active VMs`);
+        }
       }
       const clusterCount = await countActiveSessions();
       if (clusterCount >= env.MAX_CLUSTER_VMS) {
@@ -81,8 +85,8 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
       const vmId = await allocateVmid();
 
       // 5. Create session row immediately so the UI sees it as "queued"
-      const session = await createPendingSession({
-        userId,
+      const session = staged ? null : await createPendingSession({
+        userId: userId!,
         templateId: template.id,
         templateName: template.name,
         protocol: template.protocol,
@@ -95,15 +99,14 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
         guestPassword: template.password,
         initialStatus: "queued",
       });
-      logSessionEvent(session, "queued");
+      if (session) logSessionEvent(session, "queued");
 
       // Track whether we got far enough that an orphan cleanup is needed.
       let cloned = false;
 
       try {
         // 6. Clone
-        await markSessionProvisioning(session.id);
-        logSessionEvent(session, "provisioning");
+        if (session) { await markSessionProvisioning(session.id); logSessionEvent(session, "provisioning"); }
         // Proxmox VM names follow DNS hostname rules: letters, digits, and
         // hyphens only. We strip everything else (the template id can contain
         // underscores per our own config schema, but those are illegal here).
@@ -127,6 +130,16 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
           memoryMb: template.memory_mb,
         });
 
+        const noteLines = [
+          `Requested by: ${userId ? `user#${userId}` : "staging-system"}`,
+          `Template: ${templateId}`,
+          `Node: ${node}`,
+          `VMID: ${vmId}`,
+          `Job: ${job.id}`,
+          `Created: ${new Date().toISOString()}`
+        ];
+        await proxmox.setDescription(node, vmId, noteLines.join("\n"));
+
         // 7. Power on
         const startUpid = await proxmox.powerOn(node, vmId);
         await proxmox.waitForTask(node, startUpid, 60_000);
@@ -137,38 +150,59 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
         logger.info({ vmId, ip }, "guest IP available");
 
         // 9. Mark running
-        await markSessionRunning(session.id, ip);
-        logSessionEvent(session, "running");
+        if (session) {
+          await markSessionRunning(session.id, ip);
+          logSessionEvent(session, "running");
+        }
 
         await audit({
-          userId,
+          userId: userId ?? null,
           action: "vm.provisioned",
-          sessionId: session.id,
+          sessionId: session?.id ?? null,
           details: { templateId, vmId, node, ip },
         });
 
         // 10. Hard-timeout cleanup
-        await cleanupQueue.add(
-          "cleanup",
-          { sessionId: session.id, reason: "hard_timeout" },
-          { delay: env.SESSION_HARD_TIMEOUT_MINUTES * 60 * 1000 }
-        );
+        if (!staged && session) {
+          await cleanupQueue.add(
+            "cleanup",
+            { sessionId: session.id, reason: "hard_timeout" },
+            { delay: env.SESSION_HARD_TIMEOUT_MINUTES * 60 * 1000 }
+          );
+        }
 
-        return { sessionId: session.id, publicId: session.public_id };
+        if (staged) {
+          const stagedRow = await insertStagedVm({
+            template_id: template.id,
+            template_name: template.name,
+            protocol: template.protocol,
+            proxmox_node: node,
+            proxmox_vmid: vmId,
+            proxmox_template_id: template.proxmox_template_id,
+            snapshot_name: template.snapshot_name,
+            guest_port: template.port,
+            guest_username: template.username,
+            guest_password: template.password,
+          });
+          await markStagedProvisioning(stagedRow.id);
+          await markStagedRunning(stagedRow.id, ip);
+          return { stagedId: stagedRow.id, vmId };
+        }
+        return { sessionId: session!.id, publicId: session!.public_id };
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         logger.error({ vmId, node, err: reason }, "provisioning failed");
 
-        await markSessionFailed(session.id, reason);
+        if (session) await markSessionFailed(session.id, reason);
         await audit({
-          userId,
+          userId: userId ?? null,
           action: "vm.provisioned_failed",
-          sessionId: session.id,
+          sessionId: session?.id ?? null,
           details: { templateId, vmId, error: reason },
         });
 
         // Enqueue cleanup so the orphaned VM is removed from Proxmox
-        if (cloned) {
+        if (cloned && session) {
           await cleanupQueue.add("cleanup-orphan", {
             sessionId: session.id,
             reason: "provisioning_failed",

@@ -22,6 +22,7 @@ import {
   touchHeartbeat,
 } from "../services/sessionManager";
 import { cleanupQueue, provisioningQueue } from "../jobs/queues";
+import { consumeStagedVm, countLiveStagedVms, getReadyStagedVm } from "../services/staging";
 
 const router = Router();
 router.use(requireAuth);
@@ -70,10 +71,23 @@ router.post("/request", requestLimiter, async (req, res) => {
     details: { templateId },
   });
 
-  const job = await provisioningQueue.add("provision", {
-    userId: auth.sub,
-    templateId,
-  });
+  const staged = await getReadyStagedVm(templateId);
+  if (staged) {
+    await consumeStagedVm(staged.id);
+    const claimed = await provisioningQueue.add("provision", { userId: auth.sub, templateId });
+    const liveStaged = await countLiveStagedVms(templateId);
+    if (liveStaged === 0) {
+      await provisioningQueue.add("stage", { templateId, staged: true });
+    }
+    res.status(202).json({ jobId: claimed.id, templateId, status: "queued", source: "staged" });
+    return;
+  }
+
+  const job = await provisioningQueue.add("provision", { userId: auth.sub, templateId });
+  const liveStaged = await countLiveStagedVms(templateId);
+  if (liveStaged === 0) {
+    await provisioningQueue.add("stage", { templateId, staged: true });
+  }
 
   res.status(202).json({
     jobId: job.id,
