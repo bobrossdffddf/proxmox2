@@ -121,6 +121,7 @@ export function Dashboard({ user, onSignOut }: Props) {
         <div className="logo">WCTA<span className="accent">RANGE</span></div>
         <div className="user-strip">
           <span>signed in as <strong>{user.username}</strong> ({user.role})</span>
+          {user.role === "admin" && <Link to="/admin"><button>Admin</button></Link>}
           <button onClick={onSignOut}>Sign out</button>
         </div>
       </header>

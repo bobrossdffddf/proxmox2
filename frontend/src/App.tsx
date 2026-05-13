@@ -4,6 +4,7 @@ import { api, AuthUser, getToken, setToken } from "./api";
 import { Login } from "./pages/Login";
 import { Dashboard } from "./pages/Dashboard";
 import { Console } from "./pages/Console";
+import { Admin } from "./pages/Admin";
 
 export default function App() {
   const [user, setUser] = useState<AuthUser | null | undefined>(undefined);
@@ -36,6 +37,7 @@ export default function App() {
       <Route path="/console/:sessionId" element={
         user ? <ConsoleWrapper /> : <Navigate to="/login" replace />
       } />
+      <Route path="/admin" element={user?.role === "admin" ? <Admin /> : <Navigate to="/" replace />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

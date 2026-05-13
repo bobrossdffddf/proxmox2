@@ -86,6 +86,30 @@ export async function createPendingSession(opts: {
   return row;
 }
 
+
+export async function createRunningSessionFromStaged(opts: {
+  userId: number;
+  templateId: string;
+  templateName: string;
+  protocol: "rdp" | "vnc";
+  proxmoxNode: string;
+  proxmoxVmid: number;
+  proxmoxTemplateId: number;
+  snapshotName: string;
+  guestIp: string | null;
+  guestPort: number;
+  guestUsername: string | null;
+  guestPassword: string | null;
+}): Promise<SessionRow> {
+  const publicId = nanoid(16);
+  const row = await one<SessionRow>(`INSERT INTO sessions
+    (public_id, user_id, template_id, template_name, protocol, proxmox_node, proxmox_vmid, proxmox_template_id, snapshot_name, guest_ip, guest_port, guest_username, guest_password, status, hard_expires_at, last_activity_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'running', NOW() + ($14 || ' minutes')::interval, NOW()) RETURNING *`,
+    [publicId, opts.userId, opts.templateId, opts.templateName, opts.protocol, opts.proxmoxNode, opts.proxmoxVmid, opts.proxmoxTemplateId, opts.snapshotName, opts.guestIp, opts.guestPort, opts.guestUsername, opts.guestPassword, String(env.SESSION_HARD_TIMEOUT_MINUTES)]);
+  if (!row) throw new Error("Failed to create running session from staged VM");
+  return row;
+}
+
 export async function markSessionProvisioning(id: number): Promise<void> {
   await query(`UPDATE sessions SET status='provisioning' WHERE id=$1`, [id]);
 }
