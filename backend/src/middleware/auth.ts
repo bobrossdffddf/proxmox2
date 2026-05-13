@@ -30,7 +30,10 @@ export function signToken(payload: AuthPayload): string {
 }
 
 export function verifyToken(token: string): AuthPayload {
-  return jwt.verify(token, env.JWT_SECRET) as AuthPayload;
+  // jwt.verify returns `string | JwtPayload`; we know our tokens are always
+  // structured payloads we signed ourselves. Cast through unknown to satisfy
+  // TS's strict narrowing.
+  return jwt.verify(token, env.JWT_SECRET) as unknown as AuthPayload;
 }
 
 function extractToken(req: Request): string | null {
@@ -49,7 +52,7 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction) {
   if (!token) throw new HttpError(401, "missing token");
   try {
     const payload = verifyToken(token);
-    (req as AuthedRequest).auth = payload;
+    (req as unknown as AuthedRequest).auth = payload;
     next();
   } catch {
     throw new HttpError(401, "invalid or expired token");
@@ -57,7 +60,7 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction) {
 }
 
 export function requireAdmin(req: Request, _res: Response, next: NextFunction) {
-  const auth = (req as AuthedRequest).auth;
+  const auth = (req as unknown as AuthedRequest).auth;
   if (!auth || auth.role !== "admin") throw new HttpError(403, "admin only");
   next();
 }

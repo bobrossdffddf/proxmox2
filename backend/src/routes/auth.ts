@@ -68,7 +68,7 @@ router.post("/login", loginLimiter, async (req, res) => {
 });
 
 router.get("/me", requireAuth, (req, res) => {
-  const auth = (req as AuthedRequest).auth;
+  const auth = (req as unknown as AuthedRequest).auth;
   res.json({ id: auth.sub, username: auth.username, role: auth.role });
 });
 

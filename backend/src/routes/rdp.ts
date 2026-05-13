@@ -17,7 +17,7 @@ router.post("/connect", async (req, res) => {
   const parse = schema.safeParse(req.body);
   if (!parse.success) throw new HttpError(400, "sessionId required");
 
-  const auth = (req as AuthedRequest).auth;
+  const auth = (req as unknown as AuthedRequest).auth;
   try {
     const result = await issueGuacToken({
       userId: auth.sub,

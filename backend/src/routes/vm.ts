@@ -39,7 +39,7 @@ router.post("/request", requestLimiter, async (req, res) => {
   const parse = requestSchema.safeParse(req.body);
   if (!parse.success) throw new HttpError(400, "templateId required");
 
-  const auth = (req as AuthedRequest).auth;
+  const auth = (req as unknown as AuthedRequest).auth;
   const templateId = parse.data.templateId;
 
   const template = getTemplate(templateId);
@@ -83,20 +83,20 @@ router.post("/request", requestLimiter, async (req, res) => {
 });
 
 router.get("/sessions", async (req, res) => {
-  const auth = (req as AuthedRequest).auth;
+  const auth = (req as unknown as AuthedRequest).auth;
   const rows = await listActiveSessionsForUser(auth.sub);
   res.json(rows.map(publicView));
 });
 
 router.get("/sessions/:publicId", async (req, res) => {
-  const auth = (req as AuthedRequest).auth;
+  const auth = (req as unknown as AuthedRequest).auth;
   const s = await getSessionByPublicId(req.params.publicId);
   if (!s || s.user_id !== auth.sub) throw new HttpError(404, "not found");
   res.json(publicView(s));
 });
 
 router.post("/sessions/:publicId/heartbeat", async (req, res) => {
-  const auth = (req as AuthedRequest).auth;
+  const auth = (req as unknown as AuthedRequest).auth;
   const s = await getSessionByPublicId(req.params.publicId);
   if (!s || s.user_id !== auth.sub) throw new HttpError(404, "not found");
   if (s.status !== "running") {
@@ -108,7 +108,7 @@ router.post("/sessions/:publicId/heartbeat", async (req, res) => {
 });
 
 router.delete("/sessions/:publicId", async (req, res) => {
-  const auth = (req as AuthedRequest).auth;
+  const auth = (req as unknown as AuthedRequest).auth;
   const s = await getSessionByPublicId(req.params.publicId);
   if (!s || s.user_id !== auth.sub) throw new HttpError(404, "not found");
 

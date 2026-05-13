@@ -84,8 +84,32 @@ const templatesFileSchema = z.object({
   templates: z.array(templateSchema),
 });
 
-export type ProxmoxNodeConfig = z.infer<typeof nodeSchema>;
-export type TemplateConfig = z.infer<typeof templateSchema>;
+// Explicit output shapes. We avoid `z.infer` here because newer zod versions
+// keep defaulted fields as optional in the inferred input type even though the
+// parsed output always has them.
+export interface ProxmoxNodeConfig {
+  name: string;
+  host: string;
+  port: number;
+  enabled: boolean;
+}
+
+export interface TemplateConfig {
+  id: string;
+  name: string;
+  description: string;
+  icon: "windows" | "server" | "linux" | "network" | "generic";
+  proxmox_template_id: number;
+  snapshot_name: string;
+  protocol: "rdp" | "vnc";
+  port: number;
+  username: string;
+  password: string;
+  cpu_cores: number;
+  memory_mb: number;
+  enabled: boolean;
+  color?: string;
+}
 
 function readYaml<T>(file: string, schema: z.ZodType<T>): T {
   const full = path.join(env.CONFIG_DIR, file);
@@ -102,14 +126,14 @@ let _templates: TemplateConfig[] | null = null;
 
 export function getNodes(): ProxmoxNodeConfig[] {
   if (!_nodes) {
-    _nodes = readYaml("nodes.yaml", nodesFileSchema).nodes;
+    _nodes = readYaml("nodes.yaml", nodesFileSchema).nodes as ProxmoxNodeConfig[];
   }
   return _nodes;
 }
 
 export function getTemplates(): TemplateConfig[] {
   if (!_templates) {
-    _templates = readYaml("templates.yaml", templatesFileSchema).templates;
+    _templates = readYaml("templates.yaml", templatesFileSchema).templates as TemplateConfig[];
   }
   return _templates;
 }
