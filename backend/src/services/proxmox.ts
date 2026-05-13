@@ -55,6 +55,28 @@ export class ProxmoxClusterClient {
   }
 
   /**
+   * Ask Proxmox where a given VMID lives. We try each configured node's
+   * /cluster/resources view (it's cluster-wide, so one query is enough).
+   * Returns the node name that owns the VM, or null if the VM isn't found.
+   */
+  async findVmNode(vmId: number): Promise<string | null> {
+    for (const node of getNodes()) {
+      try {
+        const res = await this.clientFor(node.name).get<ProxmoxResponse<Array<{ type: string; vmid?: number; node?: string }>>>(
+          `/cluster/resources?type=vm`
+        );
+        const match = res.data.data.find((r) => r.vmid === vmId);
+        if (match?.node) return match.node;
+        // First successful response means the cluster view is complete; no need to keep asking other nodes.
+        return null;
+      } catch (err) {
+        logger.debug({ node: node.name, err: String(err) }, "findVmNode: node unreachable, trying next");
+      }
+    }
+    return null;
+  }
+
+  /**
    * Reachable, enabled nodes. We try the API once to filter out offline nodes.
    */
   async listHealthyNodes(): Promise<ProxmoxNodeConfig[]> {

@@ -57,8 +57,24 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
         throw new Error(`Unknown or disabled template: ${templateId}`);
       }
 
-      // 3. Pick a node
-      const node = await proxmox.selectLeastLoadedNode();
+      // 3. Pick a node.
+      //
+      // Linked clones (full=0) can't cross node boundaries unless the storage
+      // is shared (Ceph/NFS). So we have to clone on the node that actually
+      // owns the template. We look that up via /cluster/resources and use it,
+      // ignoring the load balancer's pick.
+      //
+      // If you migrate to shared storage later, you can drop the lookup and
+      // use selectLeastLoadedNode() directly with a target= parameter to
+      // route clones to the lowest-loaded node.
+      const templateNode = await proxmox.findVmNode(template.proxmox_template_id);
+      if (!templateNode) {
+        throw new Error(
+          `Could not find template VMID ${template.proxmox_template_id} on any node in the cluster`
+        );
+      }
+      const node = templateNode;
+      logger.info({ vmId: template.proxmox_template_id, node }, "template located, cloning here");
 
       // 4. VMID
       const vmId = await allocateVmid();
