@@ -10,7 +10,7 @@ export function Console({ onExit }: Props) {
   const { sessionId } = useParams<{ sessionId: string }>();
   const [session, setSession] = useState<SessionView | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<"rdp" | "console">("rdp");
+  const [viewMode, setViewMode] = useState<"rdp" | "console">("console");
 
   useEffect(() => {
     if (!sessionId) return;
