@@ -84,7 +84,11 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
 
       try {
         // 5. Clone
-        const vmName = `wcta-${templateId}-${userId}-${vmId}`.slice(0, 60);
+        // Proxmox VM names follow DNS hostname rules: letters, digits, and
+        // hyphens only. We strip everything else (the template id can contain
+        // underscores per our own config schema, but those are illegal here).
+        const safe = (s: string) => s.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+        const vmName = `wcta-${safe(templateId)}-${userId}-${vmId}`.slice(0, 60);
         const cloneUpid = await proxmox.cloneTemplate({
           node,
           templateId: template.proxmox_template_id,
