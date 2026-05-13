@@ -58,15 +58,31 @@ export function RDPCanvas({ sessionId }: Props) {
         containerRef.current.appendChild(display);
 
         // Wire input.
+        // The @types/guacamole-common-js package doesn't fully model the
+        // event-handler properties on Mouse/Keyboard. The runtime API works;
+        // we cast to `any` to bypass the missing type members.
         mouse = new Guacamole.Mouse(display);
-        mouse.onmousedown = mouse.onmouseup = mouse.onmousemove = (state) => {
-          client.sendMouseState(state);
+        const m = mouse as unknown as {
+          onmousedown: (s: unknown) => void;
+          onmouseup: (s: unknown) => void;
+          onmousemove: (s: unknown) => void;
         };
-        keyboard = new Guacamole.Keyboard(document);
-        keyboard.onkeydown = (keysym) => client.sendKeyEvent(1, keysym);
-        keyboard.onkeyup = (keysym) => client.sendKeyEvent(0, keysym);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const handleMouse = (state: unknown) => (client as any).sendMouseState(state);
+        m.onmousedown = handleMouse;
+        m.onmouseup = handleMouse;
+        m.onmousemove = handleMouse;
 
-        client.onstatechange = (state) => {
+        keyboard = new Guacamole.Keyboard(document);
+        const k = keyboard as unknown as {
+          onkeydown: (sym: number) => void;
+          onkeyup: (sym: number) => void;
+        };
+        k.onkeydown = (keysym: number) => client.sendKeyEvent(1, keysym);
+        k.onkeyup = (keysym: number) => client.sendKeyEvent(0, keysym);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (client as any).onstatechange = (state: number) => {
           const names: Record<number, string> = {
             0: "Idle",
             1: "Connecting...",
@@ -78,7 +94,8 @@ export function RDPCanvas({ sessionId }: Props) {
           setStatus(names[state] ?? `state ${state}`);
         };
 
-        client.onerror = (err: { message?: string }) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (client as any).onerror = (err: { message?: string }) => {
           setStatus(`Error: ${err?.message ?? "unknown"}`);
         };
 
