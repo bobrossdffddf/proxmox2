@@ -1,10 +1,33 @@
-declare module "@novnc/novnc/core/rfb" {
-  export default class RFB {
-    constructor(target: HTMLElement, urlOrChannel: string | WebSocket, options?: any);
-    scaleViewport: boolean;
-    resizeSession: boolean;
-    addEventListener(event: string, handler: (e: any) => void): void;
-    disconnect(): void;
-    sendCredentials(credentials: any): void;
+declare module "react-vnc" {
+  import { ForwardRefExoticComponent, RefAttributes } from "react";
+
+  interface VncScreenProps {
+    url: string;
+    style?: React.CSSProperties;
+    className?: string;
+    scaleViewport?: boolean;
+    viewOnly?: boolean;
+    focusOnClick?: boolean;
+    clipViewport?: boolean;
+    dragViewport?: boolean;
+    resizeSession?: boolean;
+    showDotCursor?: boolean;
+    background?: string;
+    qualityLevel?: number;
+    compressionLevel?: number;
+    autoConnect?: boolean;
+    retryDuration?: number;
+    debug?: boolean;
+    onConnect?: (rfb?: any) => void;
+    onDisconnect?: (rfb?: any) => void;
+    onCredentialsRequired?: (rfb?: any) => void;
+    onSecurityFailure?: (e?: any) => void;
+    onClipboard?: (e?: any) => void;
+    onBell?: () => void;
+    onDesktopName?: (e?: any) => void;
+    onCapabilities?: (e?: any) => void;
+    ref?: any;
   }
+
+  export const VncScreen: ForwardRefExoticComponent<VncScreenProps & RefAttributes<any>>;
 }
