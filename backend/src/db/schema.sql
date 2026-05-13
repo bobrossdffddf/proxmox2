@@ -88,24 +88,3 @@ CREATE INDEX IF NOT EXISTS audit_created_idx ON audit_log(created_at DESC);
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS max_vms INT NOT NULL DEFAULT 1;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_templates TEXT NOT NULL DEFAULT '*';
-
-CREATE TABLE IF NOT EXISTS staged_vms (
-  id                  BIGSERIAL PRIMARY KEY,
-  template_id         VARCHAR(64) NOT NULL,
-  template_name       VARCHAR(128) NOT NULL,
-  protocol            VARCHAR(8)  NOT NULL,
-  proxmox_node        VARCHAR(64) NOT NULL,
-  proxmox_vmid        INT NOT NULL UNIQUE,
-  proxmox_template_id INT NOT NULL,
-  snapshot_name       VARCHAR(64) NOT NULL,
-  guest_ip            VARCHAR(64),
-  guest_port          INT NOT NULL,
-  guest_username      VARCHAR(128),
-  guest_password      TEXT,
-  status              VARCHAR(24) NOT NULL DEFAULT 'queued',
-  failure_reason      TEXT,
-  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS staged_template_idx ON staged_vms(template_id);
-CREATE INDEX IF NOT EXISTS staged_status_idx ON staged_vms(status);

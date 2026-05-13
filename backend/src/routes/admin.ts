@@ -7,11 +7,12 @@ import { Router } from "express";
 import { z } from "zod";
 import { reloadConfigs, getNodes, getTemplates } from "../config";
 import { many, one, query } from "../db/client";
-import { requireAdmin, requireAuth } from "../middleware/auth";
+import { AuthedRequest, requireAdmin, requireAuth } from "../middleware/auth";
 import { HttpError } from "../middleware/errorHandler";
 import { audit } from "../services/audit";
 import { listAllLiveSessions } from "../services/sessionManager";
 import { proxmox } from "../services/proxmox";
+import { ensureAllStagedVms } from "../services/stagingMaintainer";
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -61,8 +62,72 @@ router.post("/users", async (req, res) => {
   res.status(201).json({ id: row?.id, username, role });
 });
 
+const updateUserSchema = z.object({
+  role: z.enum(["student", "admin"]).optional(),
+  maxVms: z.number().int().min(1).max(50).optional(),
+  allowedTemplates: z.string().min(1).max(2000).optional(),
+});
+
+router.patch("/users/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "invalid user id");
+
+  const parse = updateUserSchema.safeParse(req.body);
+  if (!parse.success) throw new HttpError(400, "invalid user payload", parse.error.flatten());
+  const { role, maxVms, allowedTemplates } = parse.data;
+  if (role === undefined && maxVms === undefined && allowedTemplates === undefined) {
+    throw new HttpError(400, "no changes provided");
+  }
+
+  const row = await one<{ id: number; username: string; role: string; max_vms: number; allowed_templates: string }>(
+    `UPDATE users
+     SET role=COALESCE($2, role),
+         max_vms=COALESCE($3, max_vms),
+         allowed_templates=COALESCE($4, allowed_templates)
+     WHERE id=$1
+     RETURNING id, username, role, max_vms, allowed_templates`,
+    [id, role ?? null, maxVms ?? null, allowedTemplates ?? null]
+  );
+  if (!row) throw new HttpError(404, "user not found");
+
+  await audit({
+    action: "admin.update_user",
+    details: { id, role, maxVms, allowedTemplates },
+    ipAddress: req.ip,
+  });
+  res.json(row);
+});
+
+const resetPasswordSchema = z.object({
+  password: z.string().min(8).max(256),
+});
+
+router.post("/users/:id/password", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "invalid user id");
+
+  const parse = resetPasswordSchema.safeParse(req.body);
+  if (!parse.success) throw new HttpError(400, "invalid password payload", parse.error.flatten());
+
+  const hash = await bcrypt.hash(parse.data.password, 12);
+  const row = await one<{ id: number; username: string }>(
+    `UPDATE users SET password_hash=$2 WHERE id=$1 RETURNING id, username`,
+    [id, hash]
+  );
+  if (!row) throw new HttpError(404, "user not found");
+
+  await audit({
+    action: "admin.reset_password",
+    details: { id, username: row.username },
+    ipAddress: req.ip,
+  });
+  res.json({ ok: true });
+});
+
 router.post("/users/:id/disable", async (req, res) => {
   const id = Number(req.params.id);
+  const auth = (req as unknown as AuthedRequest).auth;
+  if (id === auth.sub) throw new HttpError(400, "You cannot disable your own account");
   await query(`UPDATE users SET disabled=true WHERE id=$1`, [id]);
   await audit({ action: "admin.disable_user", details: { id }, ipAddress: req.ip });
   res.json({ ok: true });
@@ -80,8 +145,32 @@ router.get("/sessions", async (_req, res) => {
   res.json(all);
 });
 
+router.get("/users/:id/audit", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "invalid user id");
+
+  const logs = await many<{
+    id: number;
+    action: string;
+    session_id: number | null;
+    ip_address: string | null;
+    details: Record<string, unknown>;
+    created_at: Date;
+  }>(
+    `SELECT id, action, session_id, ip_address, details, created_at
+     FROM audit_log
+     WHERE user_id=$1
+        OR (action LIKE 'admin.%' AND (details->>'id'=$2 OR details->>'newUserId'=$2))
+     ORDER BY created_at DESC
+     LIMIT 200`,
+    [id, String(id)]
+  );
+  res.json(logs);
+});
+
 router.post("/reload", async (_req, res) => {
   reloadConfigs();
+  await ensureAllStagedVms();
   await audit({ action: "admin.reload_configs" });
   res.json({ ok: true, nodes: getNodes().length, templates: getTemplates().length });
 });

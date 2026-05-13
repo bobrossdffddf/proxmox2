@@ -91,15 +91,16 @@ export function Dashboard({ user, onSignOut }: Props) {
   const launch = useCallback(async (templateId: string) => {
     setBusy(templateId);
     try {
-      await api.requestVm(templateId);
-      setToast({ kind: "ok", msg: "VM requested — it will appear below." });
+      const result = await api.requestVm(templateId);
+      setToast({ kind: "ok", msg: "VM ready." });
       await refresh();
+      navigate(`/console/${result.sessionId}`);
     } catch (err) {
       setToast({ kind: "error", msg: err instanceof Error ? err.message : "Failed" });
     } finally {
       setBusy(null);
     }
-  }, [refresh]);
+  }, [navigate, refresh]);
 
   const stop = useCallback(async (publicId: string) => {
     if (!confirm("Stop this VM? Unsaved work will be lost.")) return;
@@ -129,7 +130,7 @@ export function Dashboard({ user, onSignOut }: Props) {
       <main className="content">
         <h1>Practice images</h1>
         <p className="subtitle">
-          Click a tile to spin up a fresh, sandboxed clone. Snapshots reset on exit, so it's safe to break things.
+          Click a tile to open a ready sandbox. Snapshots reset on exit, so it's safe to break things.
         </p>
 
         {templates.length === 0 ? (
@@ -187,4 +188,3 @@ export function Dashboard({ user, onSignOut }: Props) {
     </div>
   );
 }
-

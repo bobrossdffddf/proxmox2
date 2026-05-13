@@ -42,6 +42,26 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 export interface AuthUser { id: number; username: string; role: "student" | "admin" }
 export interface LoginResponse { token: string; user: AuthUser }
 
+export interface AdminUser {
+  id: number;
+  username: string;
+  role: "student" | "admin";
+  disabled: boolean;
+  max_vms: number;
+  allowed_templates: string;
+  created_at: string;
+  last_login_at: string | null;
+}
+
+export interface AuditLog {
+  id: number;
+  action: string;
+  session_id: number | null;
+  ip_address: string | null;
+  details: Record<string, unknown>;
+  created_at: string;
+}
+
 export interface TileTemplate {
   id: string;
   name: string;
@@ -82,7 +102,7 @@ export const api = {
   templates: () => request<TileTemplate[]>("/api/templates"),
 
   requestVm: (templateId: string) =>
-    request<{ jobId: string; templateId: string; status: string }>("/api/vm/request", {
+    request<{ sessionId: string; templateId: string; status: string; source: string }>("/api/vm/request", {
       method: "POST",
       body: JSON.stringify({ templateId }),
     }),
@@ -96,8 +116,15 @@ export const api = {
   stopSession: (publicId: string) =>
     request<{ ok: true }>(`/api/vm/sessions/${publicId}`, { method: "DELETE" }),
 
-  adminUsers: () => request<any[]>("/api/admin/users"),
-  createUser: (payload: { username: string; password: string; role: string; maxVms: number; allowedTemplates: string }) => request<any>("/api/admin/users", { method: "POST", body: JSON.stringify(payload) }),
+  adminUsers: () => request<AdminUser[]>("/api/admin/users"),
+  createUser: (payload: { username: string; password: string; role: string; maxVms: number; allowedTemplates: string }) => request<AdminUser>("/api/admin/users", { method: "POST", body: JSON.stringify(payload) }),
+  updateUser: (id: number, payload: { role?: string; maxVms?: number; allowedTemplates?: string }) =>
+    request<AdminUser>(`/api/admin/users/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  setUserEnabled: (id: number, enabled: boolean) =>
+    request<{ ok: true }>(`/api/admin/users/${id}/${enabled ? "enable" : "disable"}`, { method: "POST" }),
+  resetUserPassword: (id: number, password: string) =>
+    request<{ ok: true }>(`/api/admin/users/${id}/password`, { method: "POST", body: JSON.stringify({ password }) }),
+  userAudit: (id: number) => request<AuditLog[]>(`/api/admin/users/${id}/audit`),
 
   rdpToken: (sessionId: string) =>
     request<{ token: string; sessionPublicId: string }>("/api/rdp/connect", {

@@ -1,7 +1,7 @@
 /**
  * VM lifecycle endpoints.
  *
- *   POST   /vm/request                  -> queue a provisioning job
+ *   POST   /vm/request                  -> claim a ready staged VM
  *   GET    /vm/sessions                 -> list this user's active sessions
  *   GET    /vm/sessions/:publicId       -> single session (status + RDP info)
  *   POST   /vm/sessions/:publicId/heartbeat
@@ -11,28 +11,22 @@ import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { env, getTemplate } from "../config";
+import { one } from "../db/client";
+import { cleanupQueue } from "../jobs/queues";
 import { AuthedRequest, requireAuth } from "../middleware/auth";
 import { HttpError } from "../middleware/errorHandler";
 import { audit } from "../services/audit";
+import { redis } from "../services/redis";
 import {
   countActiveSessions,
+  createRunningSessionFromStaged,
   getSessionByPublicId,
   listActiveSessionsForUser,
   publicView,
   touchHeartbeat,
 } from "../services/sessionManager";
-import { cleanupQueue, provisioningQueue } from "../jobs/queues";
- codex/add-progress-bar-and-vm-staging-features-l2eu01
-import { one } from "../db/client";
-import { redis } from "../services/redis";
-import { claimReadyStagedVm, countLiveStagedVms } from "../services/staging";
-codex/add-progress-bar-and-vm-staging-features-7nboq7
-import { one } from "../db/client";
-import { redis } from "../services/redis";
-import { claimReadyStagedVm, countLiveStagedVms } from "../services/staging";
-import { consumeStagedVm, countLiveStagedVms, getReadyStagedVm } from "../services/staging";
-main
- main
+import { claimReadyStagedVm } from "../services/staging";
+import { ensureStagedVm } from "../services/stagingMaintainer";
 
 const router = Router();
 router.use(requireAuth);
@@ -58,21 +52,14 @@ router.post("/request", requestLimiter, async (req, res) => {
     throw new HttpError(404, "unknown template");
   }
 
- codex/add-progress-bar-and-vm-staging-features-l2eu01
-  let userCfg: { max_vms: number; allowed_templates: string } | null = null;
-  try {
-    userCfg = await one<{ max_vms: number; allowed_templates: string }>(`SELECT max_vms, allowed_templates FROM users WHERE id=$1`, [auth.sub]);
-  } catch {
-    const legacy = await one<{ role: string }>(`SELECT role FROM users WHERE id=$1`, [auth.sub]);
-    userCfg = {
-      max_vms: env.MAX_VMS_PER_USER,
-      allowed_templates: legacy?.role === "admin" ? "*" : templateId,
-    };
-  }
-  const userCfg = await one<{ max_vms: number; allowed_templates: string }>(`SELECT max_vms, allowed_templates FROM users WHERE id=$1`, [auth.sub]);
- main
+  const userCfg = await one<{ max_vms: number; allowed_templates: string }>(
+    `SELECT max_vms, allowed_templates FROM users WHERE id=$1`,
+    [auth.sub]
+  );
   const allowed = (userCfg?.allowed_templates ?? "*").split(",").map((v) => v.trim()).filter(Boolean);
-  if (!(allowed.includes("*") || allowed.includes(templateId))) throw new HttpError(403, "You do not have access to this template");
+  if (!(allowed.includes("*") || allowed.includes(templateId))) {
+    throw new HttpError(403, "You do not have access to this template");
+  }
 
   const maxForUser = userCfg?.max_vms ?? env.MAX_VMS_PER_USER;
   const active = await listActiveSessionsForUser(auth.sub);
@@ -82,6 +69,7 @@ router.post("/request", requestLimiter, async (req, res) => {
       `You already have ${active.length} active VMs (limit ${maxForUser}). Stop one and try again.`
     );
   }
+
   const cluster = await countActiveSessions();
   if (cluster >= env.MAX_CLUSTER_VMS) {
     throw new HttpError(
@@ -90,68 +78,65 @@ router.post("/request", requestLimiter, async (req, res) => {
     );
   }
 
-
   const requestLockKey = `vm:req-lock:user:${auth.sub}`;
   const lock = await redis.set(requestLockKey, String(Date.now()), "EX", 5, "NX");
   if (!lock) throw new HttpError(429, "A VM request is already being processed. Please wait a few seconds.");
 
-  await audit({
-    userId: auth.sub,
-    username: auth.username,
-    action: "vm.requested",
-    ipAddress: req.ip,
-    details: { templateId },
-  });
+  try {
+    await audit({
+      userId: auth.sub,
+      username: auth.username,
+      action: "vm.requested",
+      ipAddress: req.ip,
+      details: { templateId },
+    });
 
- codex/add-progress-bar-and-vm-staging-features-l2eu01
-  const staged = await claimReadyStagedVm(templateId);
-  if (staged) {
-    const claimed = await provisioningQueue.add("provision", { userId: auth.sub, templateId, stagedVm: staged });
-
- codex/add-progress-bar-and-vm-staging-features-7nboq7
-  const staged = await claimReadyStagedVm(templateId);
-  if (staged) {
-    const claimed = await provisioningQueue.add("provision", { userId: auth.sub, templateId, stagedVm: staged });
-
-  const staged = await getReadyStagedVm(templateId);
-  if (staged) {
-    await consumeStagedVm(staged.id);
-    const claimed = await provisioningQueue.add("provision", { userId: auth.sub, templateId });
- main
- main
-    const liveStaged = await countLiveStagedVms(templateId);
-    if (liveStaged === 0) {
-      await provisioningQueue.add("stage", { templateId, staged: true });
+    const staged = await claimReadyStagedVm(templateId);
+    if (!staged) {
+      await ensureStagedVm(templateId);
+      throw new HttpError(503, "This VM is still warming up. Try again in a moment.");
     }
- codex/add-progress-bar-and-vm-staging-features-l2eu01
+
+    const session = await createRunningSessionFromStaged({
+      userId: auth.sub,
+      templateId: staged.template_id,
+      templateName: staged.template_name,
+      protocol: staged.protocol,
+      proxmoxNode: staged.proxmox_node,
+      proxmoxVmid: staged.proxmox_vmid,
+      proxmoxTemplateId: staged.proxmox_template_id,
+      snapshotName: staged.snapshot_name,
+      guestIp: staged.guest_ip,
+      guestPort: staged.guest_port,
+      guestUsername: staged.guest_username,
+      guestPassword: staged.guest_password,
+    });
+
+    await cleanupQueue.add(
+      "cleanup",
+      { sessionId: session.id, reason: "hard_timeout" },
+      { delay: env.SESSION_HARD_TIMEOUT_MINUTES * 60 * 1000 }
+    );
+    await audit({
+      userId: auth.sub,
+      username: auth.username,
+      action: "vm.claimed_staged",
+      sessionId: session.id,
+      ipAddress: req.ip,
+      details: { templateId, stagedVmId: staged.id, vmId: staged.proxmox_vmid },
+    });
+
+    await ensureStagedVm(templateId);
+
+    res.status(201).json({
+      sessionId: session.public_id,
+      templateId,
+      status: "running",
+      source: "staged",
+    });
+  } finally {
     await redis.del(requestLockKey);
- codex/add-progress-bar-and-vm-staging-features-7nboq7
-    await redis.del(requestLockKey);
-
- main
- main
-    res.status(202).json({ jobId: claimed.id, templateId, status: "queued", source: "staged" });
-    return;
   }
-
-  const job = await provisioningQueue.add("provision", { userId: auth.sub, templateId });
- codex/add-progress-bar-and-vm-staging-features-l2eu01
-  await redis.del(requestLockKey);
- codex/add-progress-bar-and-vm-staging-features-7nboq7
-  await redis.del(requestLockKey);
-
- main
- main
-  const liveStaged = await countLiveStagedVms(templateId);
-  if (liveStaged === 0) {
-    await provisioningQueue.add("stage", { templateId, staged: true });
-  }
-
-  res.status(202).json({
-    jobId: job.id,
-    templateId,
-    status: "queued",
-  });
 });
 
 router.get("/sessions", async (req, res) => {
@@ -189,8 +174,6 @@ router.delete("/sessions/:publicId", async (req, res) => {
     { sessionId: s.id, reason: "user_requested" },
     { jobId: `cleanup-session-${s.id}` }
   );
-
-
 
   await audit({
     userId: auth.sub,

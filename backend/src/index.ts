@@ -29,6 +29,7 @@ import { createNoVncProxy } from "./rdp/novnc";
 import { startProvisioningWorker } from "./jobs/provisioningWorker";
 import { startCleanupWorker } from "./jobs/cleanupWorker";
 import { startInactivityMonitor } from "./jobs/inactivityMonitor";
+import { ensureAllStagedVms } from "./services/stagingMaintainer";
 import { parse as parseUrl } from "url";
 
 async function main() {
@@ -63,6 +64,7 @@ async function main() {
   const provisioner = startProvisioningWorker();
   const cleaner = startCleanupWorker();
   const sweeper = startInactivityMonitor();
+  await ensureAllStagedVms();
 
   // 5. HTTP + WS
   const server = http.createServer(app);
