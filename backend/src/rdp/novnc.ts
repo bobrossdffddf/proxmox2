@@ -21,11 +21,11 @@ export function createNoVncProxy() {
 
     try {
       // 1. Auth
-      const decoded = verify(token, env.JWT_SECRET) as { userId: number };
+      const decoded = verify(token, env.JWT_SECRET) as { sub: number };
       const session = await getSessionByPublicId(sessionPublicId);
 
       if (!session) throw new Error("Session not found");
-      if (session.user_id !== decoded.userId) throw new Error("Forbidden");
+      if (session.user_id !== decoded.sub) throw new Error("Forbidden");
       if (session.status !== "running") throw new Error("Session not running");
 
       // 2. Get Proxmox VNC Ticket
