@@ -16,7 +16,7 @@ export interface ProvisioningJobData {
 
 export interface CleanupJobData {
   sessionId: number;
-  reason: "user_requested" | "inactivity" | "hard_timeout" | "provisioning_failed";
+  reason: "user_requested" | "admin_requested" | "inactivity" | "hard_timeout" | "provisioning_failed";
 }
 
 export const provisioningQueue = new Queue<ProvisioningJobData>("vm-provisioning", {

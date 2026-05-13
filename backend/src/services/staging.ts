@@ -56,6 +56,10 @@ export async function listStagedVms(): Promise<StagedVmRow[]> {
   return many<StagedVmRow>(`SELECT * FROM staged_vms ORDER BY template_id, created_at`);
 }
 
+export async function getStagedVmById(id: number): Promise<StagedVmRow | null> {
+  return one<StagedVmRow>(`SELECT * FROM staged_vms WHERE id=$1`, [id]);
+}
+
 export async function insertStagedVm(
   data: Omit<StagedVmRow, "id" | "guest_ip" | "status" | "failure_reason">
 ): Promise<StagedVmRow> {
@@ -93,4 +97,8 @@ export async function markStagedRunning(id: number, ip: string): Promise<void> {
 
 export async function markStagedFailed(id: number, reason: string): Promise<void> {
   await query(`UPDATE staged_vms SET status='failed', failure_reason=$2, updated_at=NOW() WHERE id=$1`, [id, reason]);
+}
+
+export async function deleteStagedVm(id: number): Promise<void> {
+  await query(`DELETE FROM staged_vms WHERE id=$1`, [id]);
 }

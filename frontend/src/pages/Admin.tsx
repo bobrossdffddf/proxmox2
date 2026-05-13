@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { AdminUser, api, AuditLog } from "../api";
+import { AdminSession, AdminUser, api, AuditLog, StagedVm } from "../api";
 
-type Tab = "users" | "logs";
+type Tab = "users" | "sessions" | "staging" | "logs";
 
 export function Admin() {
   const [tab, setTab] = useState<Tab>("users");
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
   const [logs, setLogs] = useState<AuditLog[]>([]);
+  const [sessions, setSessions] = useState<AdminSession[]>([]);
+  const [stagedVms, setStagedVms] = useState<StagedVm[]>([]);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [form, setForm] = useState({
     username: "",
@@ -33,8 +35,18 @@ export function Admin() {
     setLogs(await api.userAudit(userId));
   };
 
+  const loadSessions = async () => {
+    setSessions(await api.adminSessions());
+  };
+
+  const loadStaged = async () => {
+    setStagedVms(await api.stagedVms());
+  };
+
   useEffect(() => {
     loadUsers().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load users" }));
+    loadSessions().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load sessions" }));
+    loadStaged().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load staging" }));
   }, []);
 
   useEffect(() => {
@@ -99,6 +111,38 @@ export function Admin() {
     setUsers((current) => current.map((user) => (user.id === id ? { ...user, ...patch } : user)));
   };
 
+  const stopSession = async (session: AdminSession) => {
+    if (!confirm(`Stop and delete VM ${session.proxmox_vmid}?`)) return;
+    try {
+      await api.stopAdminSession(session.id);
+      await loadSessions();
+      setMessage({ kind: "ok", text: "Cleanup requested." });
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof Error ? err.message : "Failed to stop session" });
+    }
+  };
+
+  const refillStaging = async () => {
+    try {
+      await api.ensureStaging();
+      await loadStaged();
+      setMessage({ kind: "ok", text: "Staging refill started." });
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof Error ? err.message : "Failed to refill staging" });
+    }
+  };
+
+  const destroyStagedVm = async (vm: StagedVm) => {
+    if (!confirm(`Destroy staged VM ${vm.proxmox_vmid}?`)) return;
+    try {
+      await api.destroyStagedVm(vm.id);
+      await loadStaged();
+      setMessage({ kind: "ok", text: "Staged VM destroyed and replacement requested." });
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof Error ? err.message : "Failed to destroy staged VM" });
+    }
+  };
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -116,6 +160,8 @@ export function Admin() {
           </div>
           <div className="admin-tabs">
             <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}>Users</button>
+            <button className={tab === "sessions" ? "active" : ""} onClick={() => setTab("sessions")}>Sessions</button>
+            <button className={tab === "staging" ? "active" : ""} onClick={() => setTab("staging")}>Staging</button>
             <button className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")}>Logs</button>
           </div>
         </div>
@@ -162,6 +208,60 @@ export function Admin() {
               </div>
             </section>
           </>
+        ) : tab === "sessions" ? (
+          <section className="admin-panel">
+            <div className="admin-log-toolbar">
+              <h2>Active Sessions</h2>
+              <button onClick={loadSessions}>Refresh</button>
+            </div>
+            {sessions.length === 0 ? (
+              <div className="empty">No active sessions.</div>
+            ) : (
+              <div className="admin-session-list">
+                {sessions.map((session) => {
+                  const owner = users.find((user) => user.id === session.user_id);
+                  return (
+                    <div key={session.id} className="admin-session-row">
+                      <div>
+                        <div className="name">{session.template_name}</div>
+                        <div className="meta">{owner?.username ?? `user #${session.user_id}`} · VM {session.proxmox_vmid} · {session.proxmox_node}</div>
+                      </div>
+                      <span className={`status-pill ${session.status}`}>{session.status}</span>
+                      <div className="meta">expires {new Date(session.hard_expires_at).toLocaleString()}</div>
+                      <button className="danger" onClick={() => stopSession(session)}>Stop & Delete</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        ) : tab === "staging" ? (
+          <section className="admin-panel">
+            <div className="admin-log-toolbar">
+              <h2>Staged VMs</h2>
+              <div className="admin-toolbar-actions">
+                <button onClick={loadStaged}>Refresh</button>
+                <button className="primary" onClick={refillStaging}>Refill</button>
+              </div>
+            </div>
+            {stagedVms.length === 0 ? (
+              <div className="empty">No staged VMs are ready yet.</div>
+            ) : (
+              <div className="admin-session-list">
+                {stagedVms.map((vm) => (
+                  <div key={vm.id} className="admin-session-row">
+                    <div>
+                      <div className="name">{vm.template_name}</div>
+                      <div className="meta">VM {vm.proxmox_vmid} · {vm.proxmox_node} · {vm.guest_ip ?? "no IP yet"}</div>
+                    </div>
+                    <span className={`status-pill ${vm.status}`}>{vm.status}</span>
+                    <div className="meta">{vm.failure_reason ?? "warm inventory only"}</div>
+                    <button className="danger" onClick={() => destroyStagedVm(vm)}>Destroy</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
         ) : (
           <section className="admin-panel">
             <div className="admin-log-toolbar">

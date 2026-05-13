@@ -637,7 +637,8 @@ h2 {
   align-items: center;
 }
 .admin-user-list,
-.admin-log-list {
+.admin-log-list,
+.admin-session-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -682,6 +683,21 @@ h2 {
 .admin-log-toolbar select {
   max-width: 260px;
 }
+.admin-toolbar-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.admin-session-row {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) 130px minmax(180px, 0.7fr) 130px;
+  gap: 12px;
+  align-items: center;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+}
 .admin-log-row {
   display: grid;
   grid-template-columns: minmax(220px, 0.7fr) minmax(260px, 1fr);
@@ -708,7 +724,11 @@ h2 {
   }
   .admin-create-grid,
   .admin-user-row,
+  .admin-session-row,
   .admin-log-row {
     grid-template-columns: 1fr;
+  }
+  .admin-toolbar-actions {
+    justify-content: flex-start;
   }
 }

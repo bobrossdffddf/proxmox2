@@ -36,7 +36,7 @@ export function startCleanupWorker(): Worker<CleanupJobData> {
         logger.warn({ sessionId }, "cleanup: session not found, skipping");
         return;
       }
-      if (session.status === "stopped" || session.status === "cleanup_failed") {
+      if (session.status === "stopped") {
         logger.debug({ sessionId, status: session.status }, "cleanup: already finalized");
         return;
       }

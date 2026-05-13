@@ -241,9 +241,6 @@ export class ProxmoxClusterClient {
     const params = new URLSearchParams();
     params.append("purge", "1");
     params.append("destroy-unreferenced-disks", "1");
-    // skiplock=1 lets us delete even if the VM is still in a locked state
-    // (e.g. clone/snapshot task just finished)
-    params.append("skiplock", "1");
     const res = await this.clientFor(node).delete<ProxmoxResponse<string>>(
       `/nodes/${node}/qemu/${vmId}?${params.toString()}`
     );

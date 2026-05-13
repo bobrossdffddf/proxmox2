@@ -189,7 +189,7 @@ export async function listStaleSessions(): Promise<SessionRow[]> {
 
 export async function listAllLiveSessions(): Promise<SessionRow[]> {
   return many<SessionRow>(
-    `SELECT * FROM sessions WHERE status IN ('queued','provisioning','running','cleaning')`
+    `SELECT * FROM sessions WHERE status IN ('queued','provisioning','running','cleaning','cleanup_failed')`
   );
 }
 

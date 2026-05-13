@@ -13,6 +13,9 @@ import { audit } from "../services/audit";
 import { listAllLiveSessions } from "../services/sessionManager";
 import { proxmox } from "../services/proxmox";
 import { ensureAllStagedVms } from "../services/stagingMaintainer";
+import { cleanupQueue } from "../jobs/queues";
+import { deleteStagedVm, getStagedVmById, listStagedVms } from "../services/staging";
+import { releaseVmid } from "../services/vmidPool";
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -143,6 +146,71 @@ router.post("/users/:id/enable", async (req, res) => {
 router.get("/sessions", async (_req, res) => {
   const all = await listAllLiveSessions();
   res.json(all);
+});
+
+router.post("/sessions/:id/stop", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "invalid session id");
+
+  await cleanupQueue.add(
+    "admin-stop",
+    { sessionId: id, reason: "admin_requested" },
+    { jobId: `admin-cleanup-session-${id}` }
+  );
+
+  await audit({
+    action: "admin.stop_session",
+    sessionId: id,
+    details: { id },
+    ipAddress: req.ip,
+  });
+  res.json({ ok: true });
+});
+
+router.get("/staged", async (_req, res) => {
+  res.json(await listStagedVms());
+});
+
+router.post("/staged/ensure", async (req, res) => {
+  await ensureAllStagedVms();
+  await audit({ action: "admin.ensure_staging", ipAddress: req.ip });
+  res.json({ ok: true });
+});
+
+router.delete("/staged/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "invalid staged VM id");
+
+  const staged = await getStagedVmById(id);
+  if (!staged) throw new HttpError(404, "staged VM not found");
+
+  await deleteStagedVm(id);
+  try {
+    try {
+      const stopUpid = await proxmox.powerOff(staged.proxmox_node, staged.proxmox_vmid, true);
+      await proxmox.waitForTask(staged.proxmox_node, stopUpid, 60_000).catch(() => undefined);
+    } catch {
+      // Already off or unreachable is fine; deletion is the important step.
+    }
+    const deleteUpid = await proxmox.deleteVM(staged.proxmox_node, staged.proxmox_vmid);
+    await proxmox.waitForTask(staged.proxmox_node, deleteUpid, 120_000);
+    await releaseVmid(staged.proxmox_vmid);
+  } catch (err) {
+    await audit({
+      action: "admin.destroy_staged_failed",
+      details: { id, vmId: staged.proxmox_vmid, error: String(err) },
+      ipAddress: req.ip,
+    });
+    throw err;
+  }
+
+  await audit({
+    action: "admin.destroy_staged",
+    details: { id, templateId: staged.template_id, vmId: staged.proxmox_vmid },
+    ipAddress: req.ip,
+  });
+  await ensureAllStagedVms();
+  res.json({ ok: true });
 });
 
 router.get("/users/:id/audit", async (req, res) => {

@@ -45,6 +45,9 @@ CREATE INDEX IF NOT EXISTS sessions_status_idx     ON sessions(status);
 CREATE INDEX IF NOT EXISTS sessions_template_idx   ON sessions(template_id);
 CREATE INDEX IF NOT EXISTS sessions_node_idx       ON sessions(proxmox_node);
 CREATE INDEX IF NOT EXISTS sessions_activity_idx   ON sessions(last_activity_at);
+CREATE UNIQUE INDEX IF NOT EXISTS sessions_active_vmid_unique
+  ON sessions(proxmox_vmid)
+  WHERE status IN ('queued','provisioning','running','cleaning');
 
 CREATE TABLE IF NOT EXISTS staged_vms (
   id                  BIGSERIAL PRIMARY KEY,
