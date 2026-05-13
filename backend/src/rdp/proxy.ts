@@ -46,6 +46,46 @@ const CIPHER = "AES-256-CBC";
 const KEY = crypto.randomBytes(32);
 const crypt = new Crypt(CIPHER, KEY);
 
+// --- GUACAMOLE-LITE MONKEY PATCHES ---
+// guacamole-lite 1.2.0 has two bugs in Node >= 18:
+// 1. ClientConnection.decryptToken uses Crypt.js which mangles PKCS7 padding
+//    because it uses 'ascii' instead of 'utf8', causing JSON.parse to fail.
+// 2. Server.js calls connect() even if the ClientConnection constructor failed
+//    and closed the socket, leading to a crash reading `.connection`.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const ClientConnection = require("guacamole-lite/lib/ClientConnection");
+
+const originalConnect = ClientConnection.prototype.connect;
+ClientConnection.prototype.connect = function (this: any, guacdOptions: unknown) {
+  // If constructor failed (e.g. invalid token), state is CLOSING/CLOSED.
+  if (this.state === this.STATE_CLOSED || this.state === this.STATE_CLOSING || !this.connectionSettings) {
+    return;
+  }
+  return originalConnect.call(this, guacdOptions);
+};
+
+ClientConnection.prototype.decryptToken = function (this: any) {
+  if (!this.clientOptions.crypt || !this.clientOptions.crypt.key) {
+    throw new Error("Encryption key not configured");
+  }
+
+  const encryptedToken = this.query.token;
+  delete this.query.token;
+
+  const tokenData = JSON.parse(Buffer.from(encryptedToken, "base64").toString("utf8"));
+  const decipher = crypto.createDecipheriv(
+    this.clientOptions.crypt.cypher,
+    this.clientOptions.crypt.key,
+    Buffer.from(tokenData.iv, "base64")
+  );
+
+  let decrypted = decipher.update(Buffer.from(tokenData.value, "base64"), undefined, "utf8");
+  decrypted += decipher.final("utf8");
+
+  return JSON.parse(decrypted);
+};
+// -------------------------------------
+
 function encryptToken(payload: object): string {
   return crypt.encrypt(payload) as string;
 }
