@@ -100,13 +100,11 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
         logger.info({ vmId, node }, "clone complete");
 
         // 6. Resources
-        const vncArgs = template.protocol === "vnc" ? `-vnc 0.0.0.0:${vmId}` : undefined;
         await proxmox.setResources({
           node,
           vmId,
           cores: template.cpu_cores,
           memoryMb: template.memory_mb,
-          args: vncArgs,
         });
 
         // 7. Power on
@@ -114,19 +112,9 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
         await proxmox.waitForTask(node, startUpid, 60_000);
         logger.info({ vmId, node }, "powered on");
 
-        // 8. Wait for IP (Skip for VNC to allow viewing boot process)
-        let ip = "";
-        let guestPort = template.port;
-        if (template.protocol === "vnc") {
-          // Find node IP
-          const nodeConfig = getNodes().find((n) => n.name === node);
-          ip = nodeConfig?.host || "127.0.0.1";
-          guestPort = 5900 + vmId;
-          logger.info({ vmId, ip, guestPort }, "VNC console mapped directly to Proxmox node");
-        } else {
-          ip = await proxmox.waitForGuestIp(node, vmId, 240_000);
-          logger.info({ vmId, ip }, "guest IP available");
-        }
+        // 8. Wait for IP
+        const ip = await proxmox.waitForGuestIp(node, vmId, 240_000);
+        logger.info({ vmId, ip }, "guest IP available");
 
         // 9. Session row
         const session = await createPendingSession({
@@ -138,7 +126,7 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
           proxmoxVmid: vmId,
           proxmoxTemplateId: template.proxmox_template_id,
           snapshotName: template.snapshot_name,
-          guestPort: guestPort,
+          guestPort: template.port,
           guestUsername: template.username,
           guestPassword: template.password,
         });
