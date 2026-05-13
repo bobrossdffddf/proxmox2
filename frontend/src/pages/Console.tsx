@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api, SessionView } from "../api";
-import { NoVNCConsole } from "../components/NoVNCConsole";
+import { ConsoleKeyHandle, NoVNCConsole } from "../components/NoVNCConsole";
 
 interface Props { onExit: () => void }
 
@@ -82,6 +82,7 @@ export function Console({ onExit }: Props) {
   const { sessionId } = useParams<{ sessionId: string }>();
   const [session, setSession] = useState<SessionView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const consoleRef = useRef<ConsoleKeyHandle | null>(null);
 
   // Poll until running
   useEffect(() => {
@@ -113,6 +114,7 @@ export function Console({ onExit }: Props) {
   if (!sessionId) return null;
 
   const isStarting = session && (session.status === "queued" || session.status === "provisioning");
+  const sendCombo = (keys: Array<{ keysym: number; code: string }>) => consoleRef.current?.sendCombo(keys);
 
   return (
     <div className="console-shell">
@@ -124,7 +126,18 @@ export function Console({ onExit }: Props) {
             <span className={`status-pill ${session.status}`}>{session.status}</span>
           )}
         </div>
-        <div>
+        <div className="console-actions">
+          {session?.status === "running" && (
+            <div className="console-key-actions" aria-label="Console key shortcuts">
+              <span>Keyboard</span>
+              <button title="Send Ctrl+Alt+Delete" onClick={() => consoleRef.current?.sendCtrlAltDel()}>Ctrl Alt Del</button>
+              <button title="Press Windows key" onClick={() => consoleRef.current?.sendKey(0xffeb, "MetaLeft")}>Win</button>
+              <button title="Send Alt+Tab" onClick={() => sendCombo([{ keysym: 0xffe9, code: "AltLeft" }, { keysym: 0xff09, code: "Tab" }])}>Alt Tab</button>
+              <button title="Send Windows+R" onClick={() => sendCombo([{ keysym: 0xffeb, code: "MetaLeft" }, { keysym: 0x0072, code: "KeyR" }])}>Win R</button>
+              <button title="Send Windows+L" onClick={() => sendCombo([{ keysym: 0xffeb, code: "MetaLeft" }, { keysym: 0x006c, code: "KeyL" }])}>Win L</button>
+              <button title="Send Escape" onClick={() => consoleRef.current?.sendKey(0xff1b, "Escape")}>Esc</button>
+            </div>
+          )}
           <button className="danger" onClick={stop}>Stop VM</button>
         </div>
       </div>
@@ -136,7 +149,7 @@ export function Console({ onExit }: Props) {
       {!error && isStarting && <StartupProgress session={session!} />}
 
       {!error && session && session.status === "running" && (
-        <NoVNCConsole sessionPublicId={sessionId} />
+        <NoVNCConsole ref={consoleRef} sessionPublicId={sessionId} />
       )}
 
       {!error && session && session.status !== "running" && !isStarting && (
