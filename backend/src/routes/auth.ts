@@ -20,12 +20,14 @@ const loginSchema = z.object({
   password: z.string().min(1).max(256),
 });
 
-// Rate-limit login: 10 attempts / 15 min / IP. Prevents brute force.
+// Keep brute-force protection without locking out a whole classroom behind
+// the same NAT after a few mistyped passwords.
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  max: 50,
   standardHeaders: true,
   legacyHeaders: false,
+  message: { error: "Too many login attempts. Please wait a few minutes and try again." },
 });
 
 router.post("/login", loginLimiter, async (req, res) => {

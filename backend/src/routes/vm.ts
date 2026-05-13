@@ -8,7 +8,6 @@
  *   DELETE /vm/sessions/:publicId       -> user-initiated stop
  */
 import { Router } from "express";
-import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { env, getTemplate } from "../config";
 import { one } from "../db/client";
@@ -33,14 +32,7 @@ router.use(requireAuth);
 
 const requestSchema = z.object({ templateId: z.string().min(1).max(64) });
 
-const requestLimiter = rateLimit({
-  windowMs: 60_000,
-  max: 5,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-router.post("/request", requestLimiter, async (req, res) => {
+router.post("/request", async (req, res) => {
   const parse = requestSchema.safeParse(req.body);
   if (!parse.success) throw new HttpError(400, "templateId required");
 
