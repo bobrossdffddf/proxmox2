@@ -135,10 +135,11 @@ function buildConnectionConfig(args: {
 
   if (args.protocol === "rdp") {
     settings.security = "any";        // accept whatever the server offers
-    settings["enable-wallpaper"] = false;
-    settings["enable-theming"] = false;
+    settings["enable-wallpaper"] = true;
+    settings["enable-theming"] = true;
     settings["enable-font-smoothing"] = true;
-    settings["resize-method"] = "display-update";
+    settings["enable-desktop-composition"] = true;
+    // Removed resize-method: display-update as it can cause black screens during handshake on some Windows versions
   }
 
   return { connection: { type: args.protocol, settings } };
