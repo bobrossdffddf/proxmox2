@@ -6,10 +6,27 @@ interface NoVNCConsoleProps {
   sessionPublicId: string;
 }
 
+interface VncHandle {
+  sendKey: (keysym: number, code: string, down?: boolean) => void;
+  sendCtrlAltDel: () => void;
+  focus: () => void;
+}
+
 export function NoVNCConsole({ sessionPublicId }: NoVNCConsoleProps) {
   const [status, setStatus] = useState("Connecting…");
   const [error, setError] = useState<string | null>(null);
-  const vncRef = useRef<any>(null);
+  const vncRef = useRef<VncHandle | null>(null);
+
+  const sendKey = (keysym: number, code: string) => {
+    vncRef.current?.sendKey(keysym, code);
+    vncRef.current?.focus();
+  };
+
+  const sendCombo = (keys: Array<{ keysym: number; code: string }>) => {
+    for (const key of keys) vncRef.current?.sendKey(key.keysym, key.code, true);
+    for (const key of [...keys].reverse()) vncRef.current?.sendKey(key.keysym, key.code, false);
+    vncRef.current?.focus();
+  };
 
   const token = getToken();
   if (!token) {
@@ -34,6 +51,26 @@ export function NoVNCConsole({ sessionPublicId }: NoVNCConsoleProps) {
 
   return (
     <div className="console-canvas-wrap">
+      <div className="novnc-keybar" aria-label="Console key shortcuts">
+        <button title="Send Ctrl+Alt+Delete" onClick={() => vncRef.current?.sendCtrlAltDel()}>
+          Ctrl Alt Del
+        </button>
+        <button title="Press Windows key" onClick={() => sendKey(0xffeb, "MetaLeft")}>
+          Win
+        </button>
+        <button title="Send Alt+Tab" onClick={() => sendCombo([{ keysym: 0xffe9, code: "AltLeft" }, { keysym: 0xff09, code: "Tab" }])}>
+          Alt Tab
+        </button>
+        <button title="Send Windows+R" onClick={() => sendCombo([{ keysym: 0xffeb, code: "MetaLeft" }, { keysym: 0x0072, code: "KeyR" }])}>
+          Win R
+        </button>
+        <button title="Send Windows+L" onClick={() => sendCombo([{ keysym: 0xffeb, code: "MetaLeft" }, { keysym: 0x006c, code: "KeyL" }])}>
+          Win L
+        </button>
+        <button title="Send Escape" onClick={() => sendKey(0xff1b, "Escape")}>
+          Esc
+        </button>
+      </div>
       {status !== "Connected" && (
         <div className="console-status-overlay">
           Console: {status}
@@ -64,4 +101,3 @@ export function NoVNCConsole({ sessionPublicId }: NoVNCConsoleProps) {
     </div>
   );
 }
-

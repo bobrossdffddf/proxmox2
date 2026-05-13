@@ -2,10 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { AdminSession, AdminUser, Announcement, api, AuditLog, StagedVm } from "../api";
 
-type Tab = "users" | "sessions" | "staging" | "announcements" | "logs";
+type Tab = "overview" | "users" | "sessions" | "staging" | "announcements" | "logs";
 
 export function Admin() {
-  const [tab, setTab] = useState<Tab>("users");
+  const [tab, setTab] = useState<Tab>("overview");
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
   const [logs, setLogs] = useState<AuditLog[]>([]);
@@ -209,9 +209,10 @@ export function Admin() {
         <div className="admin-head">
           <div>
             <h1>Admin</h1>
-            <p className="subtitle">Manage access, passwords, VM limits, and user activity.</p>
+            <p className="subtitle">Manage users, active VMs, staging inventory, announcements, and logs.</p>
           </div>
           <div className="admin-tabs">
+            <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>Overview</button>
             <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}>Users</button>
             <button className={tab === "sessions" ? "active" : ""} onClick={() => setTab("sessions")}>Sessions</button>
             <button className={tab === "staging" ? "active" : ""} onClick={() => setTab("staging")}>Staging</button>
@@ -220,7 +221,43 @@ export function Admin() {
           </div>
         </div>
 
-        {tab === "users" ? (
+        {tab === "overview" ? (
+          <>
+            <section className="admin-overview-grid">
+              <div className="admin-summary-card">
+                <div className="admin-summary-value">{users.length}</div>
+                <div className="admin-summary-label">Users</div>
+                <button onClick={() => setTab("users")}>Manage Users</button>
+              </div>
+              <div className="admin-summary-card">
+                <div className="admin-summary-value">{sessions.length}</div>
+                <div className="admin-summary-label">Active VMs</div>
+                <button onClick={() => setTab("sessions")}>View Active VMs</button>
+              </div>
+              <div className="admin-summary-card">
+                <div className="admin-summary-value">{stagedVms.filter((vm) => vm.status === "running").length}</div>
+                <div className="admin-summary-label">Ready Staged VMs</div>
+                <button onClick={() => setTab("staging")}>View Staging</button>
+              </div>
+              <div className="admin-summary-card">
+                <div className="admin-summary-value">{announcements.filter((item) => item.active).length}</div>
+                <div className="admin-summary-label">Announcements</div>
+                <button onClick={() => setTab("announcements")}>Make Announcement</button>
+              </div>
+            </section>
+
+            <section className="admin-panel">
+              <h2>Quick Actions</h2>
+              <div className="admin-quick-actions">
+                <button onClick={loadSessions}>Refresh Active VMs</button>
+                <button className="danger" onClick={stopAllSessions}>Stop All Active VMs</button>
+                <button className="danger" onClick={deleteAllVms}>Delete All VMs</button>
+                <button className="primary" onClick={refillStaging}>Refill Staging</button>
+                <button onClick={() => setTab("announcements")}>Post Announcement</button>
+              </div>
+            </section>
+          </>
+        ) : tab === "users" ? (
           <>
             <section className="admin-panel">
               <h2>Add User</h2>
