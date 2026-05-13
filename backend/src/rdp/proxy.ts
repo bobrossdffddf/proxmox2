@@ -47,13 +47,31 @@ const KEY = crypto.randomBytes(32);
 const crypt = new Crypt(CIPHER, KEY);
 
 // --- GUACAMOLE-LITE MONKEY PATCHES ---
-// guacamole-lite 1.2.0 has two bugs in Node >= 18:
-// 1. ClientConnection.decryptToken uses Crypt.js which mangles PKCS7 padding
-//    because it uses 'ascii' instead of 'utf8', causing JSON.parse to fail.
-// 2. Server.js calls connect() even if the ClientConnection constructor failed
+// guacamole-lite 1.2.0 has several bugs in Node >= 18 and with modern guacamole-common-js:
+// 1. guacamole-common-js WebSocketTunnel always appends connection data using `?`,
+//    even if the URL already has a query string. This results in URLs like:
+//    `/ws/rdp?token=eyJ...?width=1280&height=800`
+//    Node's URL parser bundles the second `?` and everything after it into the `token`.
+// 2. ClientConnection.decryptToken uses Crypt.js which mangles PKCS7 padding in Node 20.
+// 3. Server.js calls connect() even if the ClientConnection constructor failed
 //    and closed the socket, leading to a crash reading `.connection`.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const ClientConnection = require("guacamole-lite/lib/ClientConnection");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const GuacamoleLiteServer = require("guacamole-lite/lib/Server");
+
+const originalExtract = GuacamoleLiteServer.prototype.extractGuacdOptions;
+GuacamoleLiteServer.prototype.extractGuacdOptions = function (this: any, query: any) {
+  if (query && query.token && typeof query.token === "string" && query.token.includes("?")) {
+    const parts = query.token.split("?");
+    query.token = parts[0];
+    const extraQuery = new URLSearchParams(parts.slice(1).join("?"));
+    for (const [key, value] of extraQuery.entries()) {
+      query[key] = value;
+    }
+  }
+  return originalExtract.call(this, query);
+};
 
 const originalConnect = ClientConnection.prototype.connect;
 ClientConnection.prototype.connect = function (this: any, guacdOptions: unknown) {
