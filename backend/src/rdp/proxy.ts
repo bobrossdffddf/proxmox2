@@ -152,11 +152,12 @@ function buildConnectionConfig(args: {
  * We handle WebSocket upgrades centrally in index.ts so that the guac
  * WebSocketServer doesn't reject /ws/novnc requests.
  */
-export function createRdpProxy() {
+export function createRdpProxy(httpServer: HttpServer) {
   const guacServer = new GuacamoleLite(
     {
-      noServer: true,
-    } as any,
+      server: httpServer,
+      path: "/ws/rdp",
+    },
     {
       host: env.GUACD_HOST,
       port: env.GUACD_PORT,

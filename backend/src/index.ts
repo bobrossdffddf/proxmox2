@@ -64,11 +64,18 @@ async function main() {
   const cleaner = startCleanupWorker();
   const sweeper = startInactivityMonitor();
 
-  // 5. HTTP + WS — both WebSocket servers use noServer mode so we can
-  //    route upgrade requests centrally without them fighting each other.
+  // 5. HTTP + WS
   const server = http.createServer(app);
-  const guacServer = createRdpProxy();
+
+  // Create guacamole-lite with the real server so it doesn't crash.
+  // It registers its own upgrade handler for /ws/rdp internally.
+  const guacServer = createRdpProxy(server);
   const noVncWss = createNoVncProxy();
+
+  // Now steal control: remove ALL upgrade listeners (guacamole-lite's included)
+  // and add our own centralized router so /ws/novnc doesn't get rejected.
+  const guacWss = (guacServer as any).webSocketServer;
+  server.removeAllListeners("upgrade");
 
   server.on("upgrade", (req, socket, head) => {
     const { pathname } = parseUrl(req.url || "");
@@ -78,8 +85,6 @@ async function main() {
         noVncWss.emit("connection", ws, req);
       });
     } else if (pathname === "/ws/rdp") {
-      // Forward to guacamole-lite's internal WebSocketServer
-      const guacWss = (guacServer as any).webSocketServer;
       guacWss.handleUpgrade(req, socket, head, (ws: any) => {
         guacWss.emit("connection", ws, req);
       });
