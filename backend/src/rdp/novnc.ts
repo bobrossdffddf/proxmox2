@@ -9,13 +9,13 @@ import { verify } from "jsonwebtoken";
 export function createNoVncProxy() {
   const wss = new WebSocketServer({ noServer: true });
 
-  wss.on("connection", async (ws, request) => {
+  wss.on("connection", async (browserWs, request) => {
     const url = parseUrl(request.url || "", true);
     const sessionPublicId = url.query.session as string;
     const token = url.query.token as string;
 
     if (!sessionPublicId || !token) {
-      ws.close(1008, "Missing session or token");
+      browserWs.close(1008, "Missing session or token");
       return;
     }
 
@@ -45,56 +45,67 @@ export function createNoVncProxy() {
         rejectUnauthorized: env.PROXMOX_VERIFY_TLS,
       });
 
-      // Force binary handling on both sides
-      proxmoxWs.binaryType = "arraybuffer";
+      // Buffer messages from browser until proxmox WS is open
+      const pendingBrowserMessages: Array<{ data: Buffer; isBinary: boolean }> = [];
+      let proxmoxReady = false;
 
-      // 4. Bidirectional binary pipe — preserve frame types exactly
+      // 4. Proxmox -> Browser relay
       proxmoxWs.on("open", () => {
-        logger.info({ vmId: session.proxmox_vmid }, "proxmox VNC websocket opened, starting relay");
+        logger.info({ vmId: session.proxmox_vmid }, "proxmox VNC ws opened, flushing buffer");
+        proxmoxReady = true;
+
+        // Flush any buffered browser messages
+        for (const msg of pendingBrowserMessages) {
+          proxmoxWs.send(msg.data, { binary: msg.isBinary });
+        }
+        pendingBrowserMessages.length = 0;
       });
 
-      // Browser -> Proxmox: preserve binary/text frame type
-      ws.on("message", (data: Buffer, isBinary: boolean) => {
-        if (proxmoxWs.readyState === WebSocket.OPEN) {
-          proxmoxWs.send(data, { binary: isBinary });
+      proxmoxWs.on("message", (data: Buffer, isBinary: boolean) => {
+        logger.info({ size: data.length, isBinary, direction: "proxmox->browser" }, "VNC relay");
+        if (browserWs.readyState === WebSocket.OPEN) {
+          browserWs.send(data, { binary: isBinary });
         }
       });
 
-      // Proxmox -> Browser: preserve binary/text frame type
-      proxmoxWs.on("message", (data: Buffer, isBinary: boolean) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(data, { binary: isBinary });
+      // Browser -> Proxmox relay (buffer until ready)
+      browserWs.on("message", (data: Buffer, isBinary: boolean) => {
+        logger.info({ size: data.length, isBinary, direction: "browser->proxmox" }, "VNC relay");
+        if (proxmoxReady && proxmoxWs.readyState === WebSocket.OPEN) {
+          proxmoxWs.send(data, { binary: isBinary });
+        } else {
+          pendingBrowserMessages.push({ data, isBinary });
         }
       });
 
       // Cleanup
-      ws.on("close", (code) => {
-        logger.debug({ vmId: session.proxmox_vmid, code }, "browser disconnected from noVNC");
+      browserWs.on("close", (code) => {
+        logger.info({ vmId: session.proxmox_vmid, code }, "browser disconnected from noVNC");
         proxmoxWs.close();
       });
 
       proxmoxWs.on("close", (code, reason) => {
-        logger.debug({ vmId: session.proxmox_vmid, code, reason: reason?.toString() }, "proxmox VNC websocket closed");
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.close();
+        logger.info({ vmId: session.proxmox_vmid, code, reason: reason?.toString() }, "proxmox VNC ws closed");
+        if (browserWs.readyState === WebSocket.OPEN) {
+          browserWs.close();
         }
       });
 
-      ws.on("error", (err) => {
-        logger.error({ err: String(err) }, "noVNC browser websocket error");
+      browserWs.on("error", (err) => {
+        logger.error({ err: String(err) }, "noVNC browser ws error");
         proxmoxWs.close();
       });
 
       proxmoxWs.on("error", (err) => {
-        logger.error({ err: String(err) }, "noVNC proxmox websocket error");
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.close();
+        logger.error({ err: String(err) }, "noVNC proxmox ws error");
+        if (browserWs.readyState === WebSocket.OPEN) {
+          browserWs.close();
         }
       });
 
     } catch (err) {
       logger.error({ err: String(err) }, "noVNC proxy setup failed");
-      ws.close(1011, "Internal Error");
+      browserWs.close(1011, "Internal Error");
     }
   });
 
