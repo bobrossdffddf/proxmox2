@@ -50,7 +50,16 @@ router.post("/request", requestLimiter, async (req, res) => {
     throw new HttpError(404, "unknown template");
   }
 
-  const userCfg = await one<{ max_vms: number; allowed_templates: string }>(`SELECT max_vms, allowed_templates FROM users WHERE id=$1`, [auth.sub]);
+  let userCfg: { max_vms: number; allowed_templates: string } | null = null;
+  try {
+    userCfg = await one<{ max_vms: number; allowed_templates: string }>(`SELECT max_vms, allowed_templates FROM users WHERE id=$1`, [auth.sub]);
+  } catch {
+    const legacy = await one<{ role: string }>(`SELECT role FROM users WHERE id=$1`, [auth.sub]);
+    userCfg = {
+      max_vms: env.MAX_VMS_PER_USER,
+      allowed_templates: legacy?.role === "admin" ? "*" : templateId,
+    };
+  }
   const allowed = (userCfg?.allowed_templates ?? "*").split(",").map((v) => v.trim()).filter(Boolean);
   if (!(allowed.includes("*") || allowed.includes(templateId))) throw new HttpError(403, "You do not have access to this template");
 
