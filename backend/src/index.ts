@@ -3,6 +3,10 @@
  * RDP WebSocket bridge on the same HTTP server, applies the DB schema.
  */
 import "dotenv/config";
+// Monkey-patches express to forward async route errors to the error
+// middleware instead of crashing the process. Must come before any other
+// express import.
+import "express-async-errors";
 
 import cors from "cors";
 import express from "express";
