@@ -125,21 +125,23 @@ function buildConnectionConfig(args: {
   const settings: Record<string, string | number | boolean> = {
     hostname: args.host,
     port: args.port,
-    username: args.username,
-    password: args.password,
-    "ignore-cert": true,
     width: 1280,
     height: 800,
     dpi: 96,
   };
 
   if (args.protocol === "rdp") {
+    settings.username = args.username;
+    settings.password = args.password;
+    settings["ignore-cert"] = true;
     settings.security = "any";        // accept whatever the server offers
     settings["enable-wallpaper"] = true;
     settings["enable-theming"] = true;
     settings["enable-font-smoothing"] = true;
     settings["enable-desktop-composition"] = true;
-    // Removed resize-method: display-update as it can cause black screens during handshake on some Windows versions
+  } else if (args.protocol === "vnc") {
+    // QEMU VNC console does not use authentication by default
+    // and does not support RDP-specific settings.
   }
 
   return { connection: { type: args.protocol, settings } };
