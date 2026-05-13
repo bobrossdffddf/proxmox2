@@ -20,9 +20,11 @@ export function NoVNCConsole({ sessionPublicId }: NoVNCConsoleProps) {
 
   return (
     <div className="console-canvas-wrap">
-      <div className="console-status-overlay">
-        Console: {status}
-      </div>
+      {status !== "Connected" && (
+        <div className="console-status-overlay">
+          Console: {status}
+        </div>
+      )}
       <VncScreen
         url={url}
         scaleViewport
