@@ -29,6 +29,12 @@ interface ProxmoxResponse<T> {
 export class ProxmoxClusterClient {
   private clients: Map<string, AxiosInstance> = new Map();
 
+  private clientFor(nodeName: string): AxiosInstance {
+    const c = this.clients.get(nodeName);
+    if (!c) throw new Error(`Unknown Proxmox node: ${nodeName}`);
+    return c;
+  }
+
   constructor() {
     const agent = new https.Agent({
       rejectUnauthorized: env.PROXMOX_VERIFY_TLS,
@@ -44,14 +50,21 @@ export class ProxmoxClusterClient {
           Authorization: `PVEAPIToken=${env.PROXMOX_TOKEN_ID}=${env.PROXMOX_TOKEN_SECRET}`,
         },
       });
+      
+      client.interceptors.response.use(
+        (res) => res,
+        (err) => {
+          if (axios.isAxiosError(err) && err.response?.data) {
+            const pxErr = err.response.data;
+            const msg = typeof pxErr === 'string' ? pxErr : JSON.stringify(pxErr);
+            throw new Error(`Proxmox Error (${err.response.status}): ${msg}`);
+          }
+          throw err;
+        }
+      );
+
       this.clients.set(node.name, client);
     }
-  }
-
-  private clientFor(nodeName: string): AxiosInstance {
-    const c = this.clients.get(nodeName);
-    if (!c) throw new Error(`Unknown Proxmox node: ${nodeName}`);
-    return c;
   }
 
   /**

@@ -29,6 +29,7 @@ import {
   listActiveSessionsForUser,
   logSessionEvent,
   markSessionFailed,
+  markSessionProvisioning,
   markSessionRunning,
 } from "../services/sessionManager";
 import { allocateVmid, releaseVmid } from "../services/vmidPool";
@@ -79,11 +80,30 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
       // 4. VMID
       const vmId = await allocateVmid();
 
+      // 5. Create session row immediately so the UI sees it as "queued"
+      const session = await createPendingSession({
+        userId,
+        templateId: template.id,
+        templateName: template.name,
+        protocol: template.protocol,
+        proxmoxNode: node,
+        proxmoxVmid: vmId,
+        proxmoxTemplateId: template.proxmox_template_id,
+        snapshotName: template.snapshot_name,
+        guestPort: template.port,
+        guestUsername: template.username,
+        guestPassword: template.password,
+        initialStatus: "queued",
+      });
+      logSessionEvent(session, "queued");
+
       // Track whether we got far enough that an orphan cleanup is needed.
       let cloned = false;
 
       try {
-        // 5. Clone
+        // 6. Clone
+        await markSessionProvisioning(session.id);
+        logSessionEvent(session, "provisioning");
         // Proxmox VM names follow DNS hostname rules: letters, digits, and
         // hyphens only. We strip everything else (the template id can contain
         // underscores per our own config schema, but those are illegal here).
@@ -116,20 +136,7 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
         const ip = await proxmox.waitForGuestIp(node, vmId, 240_000);
         logger.info({ vmId, ip }, "guest IP available");
 
-        // 9. Session row
-        const session = await createPendingSession({
-          userId,
-          templateId: template.id,
-          templateName: template.name,
-          protocol: template.protocol,
-          proxmoxNode: node,
-          proxmoxVmid: vmId,
-          proxmoxTemplateId: template.proxmox_template_id,
-          snapshotName: template.snapshot_name,
-          guestPort: template.port,
-          guestUsername: template.username,
-          guestPassword: template.password,
-        });
+        // 9. Mark running
         await markSessionRunning(session.id, ip);
         logSessionEvent(session, "running");
 
@@ -152,33 +159,24 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
         const reason = err instanceof Error ? err.message : String(err);
         logger.error({ vmId, node, err: reason }, "provisioning failed");
 
-        // If we got as far as cloning, we have an orphan to clean up. Insert
-        // a minimal session row so the cleanup worker has something to act on.
+        await markSessionFailed(session.id, reason);
+        await audit({
+          userId,
+          action: "vm.provisioned_failed",
+          sessionId: session.id,
+          details: { templateId, vmId, error: reason },
+        });
+
+        // Enqueue cleanup so the orphaned VM is removed from Proxmox
         if (cloned) {
-          try {
-            const orphan = await createPendingSession({
-              userId,
-              templateId: template.id,
-              templateName: template.name,
-              protocol: template.protocol,
-              proxmoxNode: node,
-              proxmoxVmid: vmId,
-              proxmoxTemplateId: template.proxmox_template_id,
-              snapshotName: template.snapshot_name,
-              guestPort: template.port,
-              guestUsername: template.username,
-              guestPassword: template.password,
-            });
-            await markSessionFailed(orphan.id, reason);
-            await cleanupQueue.add("cleanup-orphan", {
-              sessionId: orphan.id,
-              reason: "provisioning_failed",
-            });
-          } catch (cleanupErr) {
+          await cleanupQueue.add("cleanup-orphan", {
+            sessionId: session.id,
+            reason: "provisioning_failed",
+          }).catch((cleanupErr) => {
             logger.error({ err: String(cleanupErr) }, "failed to enqueue orphan cleanup");
-          }
+          });
         } else {
-          await releaseVmid(vmId);
+          await releaseVmid(vmId).catch(() => undefined);
         }
 
         throw err;
