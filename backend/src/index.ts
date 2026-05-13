@@ -24,11 +24,12 @@ import vmRouter from "./routes/vm";
 import adminRouter from "./routes/admin";
 import rdpRouter from "./routes/rdp";
 
-import { mountRdpProxy } from "./rdp/proxy";
-import { mountNoVncProxy } from "./rdp/novnc";
+import { createRdpProxy } from "./rdp/proxy";
+import { createNoVncProxy } from "./rdp/novnc";
 import { startProvisioningWorker } from "./jobs/provisioningWorker";
 import { startCleanupWorker } from "./jobs/cleanupWorker";
 import { startInactivityMonitor } from "./jobs/inactivityMonitor";
+import { parse as parseUrl } from "url";
 
 async function main() {
   logger.info({ env: env.NODE_ENV }, "starting backend");
@@ -63,10 +64,29 @@ async function main() {
   const cleaner = startCleanupWorker();
   const sweeper = startInactivityMonitor();
 
-  // 5. HTTP + WS
+  // 5. HTTP + WS — both WebSocket servers use noServer mode so we can
+  //    route upgrade requests centrally without them fighting each other.
   const server = http.createServer(app);
-  mountRdpProxy(server);
-  mountNoVncProxy(server);
+  const guacServer = createRdpProxy();
+  const noVncWss = createNoVncProxy();
+
+  server.on("upgrade", (req, socket, head) => {
+    const { pathname } = parseUrl(req.url || "");
+
+    if (pathname === "/ws/novnc") {
+      noVncWss.handleUpgrade(req, socket, head, (ws) => {
+        noVncWss.emit("connection", ws, req);
+      });
+    } else if (pathname === "/ws/rdp") {
+      // Forward to guacamole-lite's internal WebSocketServer
+      const guacWss = (guacServer as any).webSocketServer;
+      guacWss.handleUpgrade(req, socket, head, (ws: any) => {
+        guacWss.emit("connection", ws, req);
+      });
+    } else {
+      socket.destroy();
+    }
+  });
 
   server.listen(env.BACKEND_PORT, () => {
     logger.info({ port: env.BACKEND_PORT }, "backend listening");

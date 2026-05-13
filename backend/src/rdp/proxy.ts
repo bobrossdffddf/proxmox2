@@ -148,14 +148,14 @@ function buildConnectionConfig(args: {
 }
 
 /**
- * Mount the WebSocket server on the existing HTTP server at /ws/rdp.
- * guacamole-lite handles the upgrade dance itself.
+ * Create the Guacamole-lite proxy in noServer mode.
+ * We handle WebSocket upgrades centrally in index.ts so that the guac
+ * WebSocketServer doesn't reject /ws/novnc requests.
  */
-export function mountRdpProxy(httpServer: HttpServer): void {
+export function createRdpProxy() {
   const guacServer = new GuacamoleLite(
     {
-      server: httpServer,
-      path: "/ws/rdp",
+      noServer: true,
     },
     {
       host: env.GUACD_HOST,
@@ -167,13 +167,12 @@ export function mountRdpProxy(httpServer: HttpServer): void {
         key: KEY,
       },
       log: {
-        level: "ERRORS", // 'QUIET' | 'ERRORS' | 'NORMAL' | 'VERBOSE' | 'DEBUG'
+        level: "ERRORS",
       },
-      maxInactivityTime: 0, // we manage timeouts ourselves
+      maxInactivityTime: 0,
     }
   );
 
-  // guacamole-lite emits events we can use for auditing / heartbeats.
   guacServer.on("open", (clientConnection: { connectionSettings?: Record<string, unknown> }) => {
     logger.debug({ settings: clientConnection?.connectionSettings }, "guacamole connection open");
   });
@@ -183,6 +182,8 @@ export function mountRdpProxy(httpServer: HttpServer): void {
   guacServer.on("error", (_clientConnection: unknown, err: unknown) => {
     logger.warn({ err: String(err) }, "guacamole connection error");
   });
+
+  return guacServer;
 }
 
 /**
