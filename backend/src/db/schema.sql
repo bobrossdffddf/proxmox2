@@ -97,6 +97,12 @@ CREATE TABLE IF NOT EXISTS announcements (
 
 CREATE INDEX IF NOT EXISTS announcements_active_created_idx ON announcements(active, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS template_staging_settings (
+  template_id VARCHAR(64) PRIMARY KEY,
+  pool_size   INT NOT NULL DEFAULT 1 CHECK (pool_size >= 0 AND pool_size <= 20),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Backfill migrations for existing deployments
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS max_vms INT NOT NULL DEFAULT 1;

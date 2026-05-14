@@ -77,6 +77,7 @@ const templateSchema = z.object({
   password: z.string(),
   cpu_cores: z.number().int().min(1).default(2),
   memory_mb: z.number().int().min(512).default(2048),
+  staging_pool_size: z.number().int().min(0).max(20).default(1),
   enabled: z.boolean().default(true),
   color: z.string().optional(),
 });
@@ -108,6 +109,7 @@ export interface TemplateConfig {
   password: string;
   cpu_cores: number;
   memory_mb: number;
+  staging_pool_size: number;
   enabled: boolean;
   color?: string;
   proxmox_template_ids?: Record<string, number>;

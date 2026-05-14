@@ -4,6 +4,7 @@ import { getToken } from "../api";
 
 interface NoVNCConsoleProps {
   sessionPublicId: string;
+  scalingMode: "scale" | "viewport" | "native";
 }
 
 export interface ConsoleKeyHandle {
@@ -11,6 +12,7 @@ export interface ConsoleKeyHandle {
   sendKey: (keysym: number, code: string) => void;
   sendCombo: (keys: Array<{ keysym: number; code: string }>) => void;
   pasteText: (text: string) => void;
+  takeScreenshot: () => string | null;
 }
 
 interface VncHandle {
@@ -21,12 +23,13 @@ interface VncHandle {
 }
 
 export const NoVNCConsole = forwardRef<ConsoleKeyHandle, NoVNCConsoleProps>(function NoVNCConsole(
-  { sessionPublicId },
+  { sessionPublicId, scalingMode },
   ref
 ) {
   const [status, setStatus] = useState("Connecting…");
   const [error, setError] = useState<string | null>(null);
   const vncRef = useRef<VncHandle | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
 
   const sendKey = (keysym: number, code: string) => {
     vncRef.current?.sendKey(keysym, code);
@@ -49,6 +52,11 @@ export const NoVNCConsole = forwardRef<ConsoleKeyHandle, NoVNCConsoleProps>(func
     pasteText: (text: string) => {
       vncRef.current?.clipboardPaste(text);
       vncRef.current?.focus();
+    },
+    takeScreenshot: () => {
+      const canvas = wrapRef.current?.querySelector("canvas");
+      if (!canvas) return null;
+      return canvas.toDataURL("image/png");
     },
   }));
 
@@ -74,7 +82,7 @@ export const NoVNCConsole = forwardRef<ConsoleKeyHandle, NoVNCConsoleProps>(func
   }
 
   return (
-    <div className="console-canvas-wrap">
+    <div className={`console-canvas-wrap scaling-${scalingMode}`} ref={wrapRef}>
       {status !== "Connected" && (
         <div className="console-status-overlay">
           Console: {status}
@@ -82,10 +90,11 @@ export const NoVNCConsole = forwardRef<ConsoleKeyHandle, NoVNCConsoleProps>(func
       )}
       <VncScreen
         url={url}
-        scaleViewport
+        scaleViewport={scalingMode !== "native"}
+        clipViewport={scalingMode === "viewport"}
         style={{ width: "100%", height: "100%" }}
         ref={vncRef}
-        resizeSession
+        resizeSession={scalingMode === "scale"}
         qualityLevel={6}
         compressionLevel={2}
         onConnect={() => setStatus("Connected")}

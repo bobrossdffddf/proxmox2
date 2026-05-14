@@ -25,6 +25,7 @@
 #
 # Optional fields:
 #   enabled     - default true; set false to hide a tile without deleting it
+#   staging_pool_size - default 1; warm VMs to keep ready per template node
 #   color       - hex tint applied to the tile border (defaults to cyan)
 
 templates:
@@ -40,6 +41,7 @@ templates:
     password: ChangeMe123!
     cpu_cores: 4
     memory_mb: 4096
+    staging_pool_size: 1
     enabled: true
 
   - id: server2022_baseline
@@ -54,6 +56,7 @@ templates:
     password: ChangeMe123!
     cpu_cores: 4
     memory_mb: 8192
+    staging_pool_size: 1
     enabled: true
 
   - id: ubuntu22_baseline
@@ -68,4 +71,5 @@ templates:
     password: ChangeMe123!
     cpu_cores: 2
     memory_mb: 2048
+    staging_pool_size: 1
     enabled: true

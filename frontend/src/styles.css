@@ -351,7 +351,8 @@ h2 {
   align-items: center;
   gap: 10px;
 }
-.console-key-actions {
+.console-key-actions,
+.console-tool-actions {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -360,7 +361,8 @@ h2 {
   border: 1px solid rgba(33, 230, 242, 0.2);
   border-radius: 8px;
 }
-.console-key-actions span {
+.console-key-actions span,
+.console-tool-actions span {
   color: var(--cyan);
   font-size: 10px;
   font-weight: 700;
@@ -368,7 +370,9 @@ h2 {
   letter-spacing: 0.14em;
   padding: 0 4px;
 }
-.console-key-actions button {
+.console-key-actions button,
+.console-tool-actions button,
+.console-tool-actions select {
   padding: 5px 8px;
   font-size: 11px;
   border-radius: 6px;
@@ -385,6 +389,9 @@ h2 {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+.console-canvas-wrap.scaling-native {
+  overflow: auto;
 }
 .console-status {
   color: var(--text-dim);
@@ -553,7 +560,7 @@ h2 {
 }
 .clipboard-bar {
   display: grid;
-  grid-template-columns: auto minmax(220px, 1fr) auto auto auto;
+  grid-template-columns: auto minmax(220px, 1fr) auto auto auto minmax(120px, 180px);
   align-items: center;
   gap: 10px;
   padding: 8px 18px;
@@ -795,6 +802,20 @@ h2 {
   gap: 8px;
   justify-content: flex-end;
 }
+.row-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+.icon-danger {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-color: rgba(255, 85, 114, 0.45);
+  color: var(--red);
+  font-weight: 700;
+}
 .admin-session-row {
   display: grid;
   grid-template-columns: minmax(240px, 1fr) 130px minmax(180px, 0.7fr) 130px;
@@ -817,6 +838,55 @@ h2 {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 12px;
+}
+.staging-target-row {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) 160px 100px;
+  gap: 12px;
+  align-items: center;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+}
+.staging-target-row label,
+.import-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.staging-target-row label span,
+.import-grid label span {
+  color: var(--text-mute);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+.import-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  gap: 12px;
+}
+.import-wide {
+  grid-column: 1 / -1;
+}
+.import-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.import-step {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
+.import-step pre {
+  margin: 10px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-dim);
+  font-size: 12px;
 }
 .resource-card {
   display: flex;
@@ -871,6 +941,8 @@ h2 {
   .announcement-form,
   .admin-user-row,
   .admin-session-row,
+  .staging-target-row,
+  .import-grid,
   .resource-row,
   .clipboard-bar,
   .admin-log-row {

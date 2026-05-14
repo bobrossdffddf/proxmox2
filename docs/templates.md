@@ -21,7 +21,16 @@ Linked clones are fastest when the template lives on the same node/storage as th
       pve-node-2: 9101
 ```
 
-WCTARange will keep one staged clone per configured node and choose from those warm VMs when users launch. If a node shows unreachable, check that `config/nodes.yaml` uses the exact Proxmox node name and an API-reachable host/IP for that node.
+WCTARange keeps staged clones per configured node and chooses from those warm VMs when users launch. The default is one warm VM per node. Set `staging_pool_size` on a template, or use the Admin -> Staging page, to keep more ready:
+
+```yaml
+  - id: windows11_baseline
+    name: Windows 11
+    proxmox_template_id: 9001
+    staging_pool_size: 2
+```
+
+If a node shows unreachable, check that `config/nodes.yaml` uses the exact Proxmox node name and an API-reachable host/IP for that node.
 
 ## Windows 11 / Server 2022 template
 

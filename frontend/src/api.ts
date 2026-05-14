@@ -87,6 +87,15 @@ export interface StagedVm {
   failure_reason: string | null;
 }
 
+export interface StagingTarget {
+  templateId: string;
+  templateName: string;
+  nodes: string[];
+  poolSize: number;
+  currentReady: number;
+  currentLive: number;
+}
+
 export interface Announcement {
   id: number;
   title: string;
@@ -207,12 +216,22 @@ export const api = {
   adminSessions: () => request<AdminSession[]>("/api/admin/sessions"),
   stopAdminSession: (id: number) =>
     request<{ ok: true }>(`/api/admin/sessions/${id}/stop`, { method: "POST" }),
+  forgetAdminSession: (id: number) =>
+    request<{ ok: true }>(`/api/admin/sessions/${id}/forget`, { method: "POST" }),
   stopAllAdminSessions: () =>
     request<{ ok: true; count: number }>("/api/admin/sessions/stop-all", { method: "POST" }),
   stagedVms: () => request<StagedVm[]>("/api/admin/staged"),
   ensureStaging: () => request<{ ok: true }>("/api/admin/staged/ensure", { method: "POST" }),
+  stagingTargets: () => request<StagingTarget[]>("/api/admin/staging-targets"),
+  updateStagingTarget: (templateId: string, poolSize: number) =>
+    request<{ ok: true }>(`/api/admin/staging-targets/${templateId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ poolSize }),
+    }),
   destroyStagedVm: (id: number) =>
     request<{ ok: true }>(`/api/admin/staged/${id}`, { method: "DELETE" }),
+  forgetStagedVm: (id: number) =>
+    request<{ ok: true }>(`/api/admin/staged/${id}/forget`, { method: "POST" }),
   deleteAllVms: () =>
     request<{ ok: true; activeQueued: number; stagedDestroyed: number }>("/api/admin/vms/all", { method: "DELETE" }),
   adminAnnouncements: () => request<Announcement[]>("/api/admin/announcements"),

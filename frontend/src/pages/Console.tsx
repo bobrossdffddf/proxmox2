@@ -7,6 +7,22 @@ interface Props { onExit: () => void }
 
 // Typical provisioning takes ~90 seconds — we use this as our ETA baseline.
 const PROVISION_ETA_SECONDS = 90;
+const CLIPBOARD_HISTORY_KEY = "wcta.console.clipboardHistory";
+
+type ScalingMode = "scale" | "viewport" | "native";
+
+function loadClipboardHistory(): string[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CLIPBOARD_HISTORY_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string").slice(0, 8) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveClipboardHistory(items: string[]) {
+  localStorage.setItem(CLIPBOARD_HISTORY_KEY, JSON.stringify(items.slice(0, 8)));
+}
 
 function StartupProgress({ session }: { session: SessionView }) {
   const startRef = useRef(new Date(session.createdAt).getTime());
@@ -80,10 +96,13 @@ function CredentialsBadge({ session }: { session: SessionView }) {
 
 export function Console({ onExit }: Props) {
   const { sessionId } = useParams<{ sessionId: string }>();
+  const shellRef = useRef<HTMLDivElement | null>(null);
   const [session, setSession] = useState<SessionView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [clipboardText, setClipboardText] = useState("");
   const [remoteClipboard, setRemoteClipboard] = useState("");
+  const [clipboardHistory, setClipboardHistory] = useState<string[]>(() => loadClipboardHistory());
+  const [scalingMode, setScalingMode] = useState<ScalingMode>("scale");
   const consoleRef = useRef<ConsoleKeyHandle | null>(null);
 
   // Poll until running
@@ -110,7 +129,10 @@ export function Console({ onExit }: Props) {
   useEffect(() => {
     const handler = (event: Event) => {
       const text = (event as CustomEvent<string>).detail;
-      if (typeof text === "string") setRemoteClipboard(text);
+      if (typeof text === "string") {
+        setRemoteClipboard(text);
+        rememberClipboard(text);
+      }
     };
     window.addEventListener("wcta:remote-clipboard", handler);
     return () => window.removeEventListener("wcta:remote-clipboard", handler);
@@ -126,21 +148,49 @@ export function Console({ onExit }: Props) {
 
   const isStarting = session && (session.status === "queued" || session.status === "provisioning");
   const sendCombo = (keys: Array<{ keysym: number; code: string }>) => consoleRef.current?.sendCombo(keys);
+  const rememberClipboard = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setClipboardHistory((current) => {
+      const next = [trimmed, ...current.filter((item) => item !== trimmed)].slice(0, 8);
+      saveClipboardHistory(next);
+      return next;
+    });
+  };
   const pasteText = async () => {
     let text = clipboardText;
     if (!text && navigator.clipboard?.readText) {
       text = await navigator.clipboard.readText().catch(() => "");
       setClipboardText(text);
     }
-    if (text) consoleRef.current?.pasteText(text);
+    if (text) {
+      consoleRef.current?.pasteText(text);
+      rememberClipboard(text);
+    }
   };
   const copyRemote = async () => {
     if (!remoteClipboard) return;
     await navigator.clipboard?.writeText(remoteClipboard).catch(() => undefined);
+    rememberClipboard(remoteClipboard);
+  };
+  const downloadScreenshot = () => {
+    const image = consoleRef.current?.takeScreenshot();
+    if (!image) return;
+    const link = document.createElement("a");
+    link.href = image;
+    link.download = `wctarange-${session?.templateId ?? "vm"}-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
+    link.click();
+  };
+  const toggleFullscreen = async () => {
+    if (!document.fullscreenElement) {
+      await shellRef.current?.requestFullscreen().catch(() => undefined);
+    } else {
+      await document.exitFullscreen().catch(() => undefined);
+    }
   };
 
   return (
-    <div className="console-shell">
+    <div className="console-shell" ref={shellRef}>
       <div className="console-bar">
         <div className="left">
           <button onClick={onExit}>&larr; Back</button>
@@ -159,6 +209,18 @@ export function Console({ onExit }: Props) {
               <button title="Send Windows+R" onClick={() => sendCombo([{ keysym: 0xffeb, code: "MetaLeft" }, { keysym: 0x0072, code: "KeyR" }])}>Win R</button>
               <button title="Send Windows+L" onClick={() => sendCombo([{ keysym: 0xffeb, code: "MetaLeft" }, { keysym: 0x006c, code: "KeyL" }])}>Win L</button>
               <button title="Send Escape" onClick={() => consoleRef.current?.sendKey(0xff1b, "Escape")}>Esc</button>
+            </div>
+          )}
+          {session?.status === "running" && (
+            <div className="console-tool-actions" aria-label="Console tools">
+              <span>View</span>
+              <select value={scalingMode} onChange={(e) => setScalingMode(e.target.value as ScalingMode)} title="Scaling mode">
+                <option value="scale">Fit + resize</option>
+                <option value="viewport">Fit only</option>
+                <option value="native">Native</option>
+              </select>
+              <button title="Download screenshot" onClick={downloadScreenshot}>Screenshot</button>
+              <button title="Toggle fullscreen" onClick={toggleFullscreen}>Fullscreen</button>
             </div>
           )}
           <button className="danger" onClick={stop}>Stop VM</button>
@@ -182,6 +244,19 @@ export function Console({ onExit }: Props) {
           <button disabled={!remoteClipboard} onClick={copyRemote}>
             Copy From VM
           </button>
+          <select
+            value=""
+            aria-label="Clipboard history"
+            onChange={(e) => {
+              setClipboardText(e.target.value);
+              if (e.target.value) consoleRef.current?.pasteText(e.target.value);
+            }}
+          >
+            <option value="">History</option>
+            {clipboardHistory.map((item) => (
+              <option key={item} value={item}>{item.length > 60 ? `${item.slice(0, 57)}...` : item}</option>
+            ))}
+          </select>
         </div>
       )}
 
@@ -190,7 +265,7 @@ export function Console({ onExit }: Props) {
       {!error && isStarting && <StartupProgress session={session!} />}
 
       {!error && session && session.status === "running" && (
-        <NoVNCConsole ref={consoleRef} sessionPublicId={sessionId} />
+        <NoVNCConsole ref={consoleRef} sessionPublicId={sessionId} scalingMode={scalingMode} />
       )}
 
       {!error && session && session.status !== "running" && !isStarting && (

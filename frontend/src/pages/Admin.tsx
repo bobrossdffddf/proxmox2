@@ -1,8 +1,87 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { AdminSession, AdminUser, Announcement, api, AuditLog, ResourceReport, StagedVm } from "../api";
+import { AdminSession, AdminUser, Announcement, api, AuditLog, ResourceReport, StagedVm, StagingTarget } from "../api";
 
-type Tab = "overview" | "users" | "sessions" | "resources" | "staging" | "announcements" | "logs";
+type Tab = "overview" | "users" | "sessions" | "resources" | "staging" | "import" | "announcements" | "logs";
+
+function ImportWizard() {
+  const [form, setForm] = useState({
+    vmid: "9101",
+    name: "windows11-import",
+    storage: "datastore-g10",
+    bridge: "vmbr0",
+    sourceFile: "/var/lib/vz/template/import/image.ova",
+  });
+
+  const isOva = form.sourceFile.toLowerCase().endsWith(".ova");
+  const importCommands = isOva
+    ? [
+        "mkdir -p /var/lib/vz/template/import",
+        `mkdir -p /var/lib/vz/template/import/${form.name}`,
+        `tar -xvf ${form.sourceFile} -C /var/lib/vz/template/import/${form.name}`,
+        `qm create ${form.vmid} --name ${form.name} --memory 4096 --cores 4 --net0 virtio,bridge=${form.bridge} --ostype win11`,
+        `qm importdisk ${form.vmid} /var/lib/vz/template/import/${form.name}/*.vmdk ${form.storage}`,
+        `qm set ${form.vmid} --scsihw virtio-scsi-pci --scsi0 ${form.storage}:vm-${form.vmid}-disk-0`,
+        `qm set ${form.vmid} --boot order=scsi0 --agent enabled=1`,
+        `qm template ${form.vmid}`,
+      ]
+    : [
+        `qm create ${form.vmid} --name ${form.name} --memory 4096 --cores 4 --net0 virtio,bridge=${form.bridge}`,
+        `qm importdisk ${form.vmid} ${form.sourceFile} ${form.storage}`,
+        `qm set ${form.vmid} --scsihw virtio-scsi-pci --scsi0 ${form.storage}:vm-${form.vmid}-disk-0`,
+        `qm set ${form.vmid} --boot order=scsi0 --agent enabled=1`,
+        `qm template ${form.vmid}`,
+      ];
+
+  return (
+    <>
+      <section className="admin-panel">
+        <h2>VMware / OVA Import Wizard</h2>
+        <div className="import-grid">
+          <label>
+            <span>New VMID</span>
+            <input value={form.vmid} onChange={(e) => setForm({ ...form, vmid: e.target.value })} />
+          </label>
+          <label>
+            <span>Name</span>
+            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </label>
+          <label>
+            <span>Target storage</span>
+            <input value={form.storage} onChange={(e) => setForm({ ...form, storage: e.target.value })} />
+          </label>
+          <label>
+            <span>Network bridge</span>
+            <input value={form.bridge} onChange={(e) => setForm({ ...form, bridge: e.target.value })} />
+          </label>
+          <label className="import-wide">
+            <span>Uploaded OVA, VMDK, QCOW2, or RAW path</span>
+            <input value={form.sourceFile} onChange={(e) => setForm({ ...form, sourceFile: e.target.value })} />
+          </label>
+        </div>
+      </section>
+
+      <section className="admin-panel">
+        <h2>Generated Steps</h2>
+        <div className="import-steps">
+          <div className="import-step">
+            <div className="name">1. Upload the image to the Proxmox node</div>
+            <div className="meta">Put the file at the path above. For local storage, upload it to the node that will host this template.</div>
+          </div>
+          <div className="import-step">
+            <div className="name">2. Run these on that Proxmox node</div>
+            <pre>{importCommands.join("\n")}</pre>
+          </div>
+          <div className="import-step">
+            <div className="name">3. Add the VMID to WCTARange</div>
+            <pre>{`proxmox_template_id: ${form.vmid}
+snapshot_name: ""`}</pre>
+          </div>
+        </div>
+      </section>
+    </>
+  );
+}
 
 export function Admin() {
   const [tab, setTab] = useState<Tab>("overview");
@@ -11,6 +90,7 @@ export function Admin() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [sessions, setSessions] = useState<AdminSession[]>([]);
   const [stagedVms, setStagedVms] = useState<StagedVm[]>([]);
+  const [stagingTargets, setStagingTargets] = useState<StagingTarget[]>([]);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [resources, setResources] = useState<ResourceReport | null>(null);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
@@ -46,6 +126,10 @@ export function Admin() {
     setStagedVms(await api.stagedVms());
   };
 
+  const loadStagingTargets = async () => {
+    setStagingTargets(await api.stagingTargets());
+  };
+
   const loadAnnouncements = async () => {
     setAnnouncements(await api.adminAnnouncements());
   };
@@ -58,6 +142,7 @@ export function Admin() {
     loadUsers().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load users" }));
     loadSessions().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load sessions" }));
     loadStaged().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load staging" }));
+    loadStagingTargets().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load staging targets" }));
     loadAnnouncements().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load announcements" }));
     loadResources().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load resources" }));
   }, []);
@@ -135,6 +220,17 @@ export function Admin() {
     }
   };
 
+  const forgetSession = async (session: AdminSession) => {
+    if (!confirm(`Remove VM ${session.proxmox_vmid} from this admin view? This will not contact Proxmox.`)) return;
+    try {
+      await api.forgetAdminSession(session.id);
+      await Promise.all([loadSessions(), loadResources()]);
+      setMessage({ kind: "ok", text: "VM removed from view." });
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof Error ? err.message : "Failed to remove VM from view" });
+    }
+  };
+
   const stopAllSessions = async () => {
     if (!confirm("Stop and delete every active user VM?")) return;
     try {
@@ -163,10 +259,26 @@ export function Admin() {
   const refillStaging = async () => {
     try {
       await api.ensureStaging();
-      await loadStaged();
+      await Promise.all([loadStaged(), loadStagingTargets()]);
       setMessage({ kind: "ok", text: "Staging refill started." });
     } catch (err) {
       setMessage({ kind: "error", text: err instanceof Error ? err.message : "Failed to refill staging" });
+    }
+  };
+
+  const updateLocalStagingTarget = (templateId: string, poolSize: number) => {
+    setStagingTargets((current) => current.map((target) => (
+      target.templateId === templateId ? { ...target, poolSize } : target
+    )));
+  };
+
+  const saveStagingTarget = async (target: StagingTarget) => {
+    try {
+      await api.updateStagingTarget(target.templateId, target.poolSize);
+      await Promise.all([loadStaged(), loadStagingTargets()]);
+      setMessage({ kind: "ok", text: "Warm pool updated." });
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof Error ? err.message : "Failed to update warm pool" });
     }
   };
 
@@ -180,6 +292,18 @@ export function Admin() {
       setMessage({ kind: "error", text: err instanceof Error ? err.message : "Failed to destroy staged VM" });
     }
   };
+
+  const forgetStagedVm = async (vm: StagedVm) => {
+    if (!confirm(`Remove staged VM ${vm.proxmox_vmid} from this admin view? This will not contact Proxmox.`)) return;
+    try {
+      await api.forgetStagedVm(vm.id);
+      await Promise.all([loadStaged(), loadStagingTargets()]);
+      setMessage({ kind: "ok", text: "Staged VM removed from view." });
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof Error ? err.message : "Failed to remove staged VM from view" });
+    }
+  };
+
 
   const createAnnouncement = async () => {
     try {
@@ -235,6 +359,7 @@ export function Admin() {
             <button className={tab === "sessions" ? "active" : ""} onClick={() => setTab("sessions")}>Sessions</button>
             <button className={tab === "resources" ? "active" : ""} onClick={() => setTab("resources")}>Resources</button>
             <button className={tab === "staging" ? "active" : ""} onClick={() => setTab("staging")}>Staging</button>
+            <button className={tab === "import" ? "active" : ""} onClick={() => setTab("import")}>Import</button>
             <button className={tab === "announcements" ? "active" : ""} onClick={() => setTab("announcements")}>Announcements</button>
             <button className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")}>Logs</button>
           </div>
@@ -343,7 +468,10 @@ export function Admin() {
                       </div>
                       <span className={`status-pill ${session.status}`}>{session.status}</span>
                       <div className="meta">expires {new Date(session.hard_expires_at).toLocaleString()}</div>
-                      <button className="danger" onClick={() => stopSession(session)}>Stop & Delete</button>
+                      <div className="row-actions">
+                        <button className="danger" onClick={() => stopSession(session)}>Stop & Delete</button>
+                        <button className="icon-danger" title="Remove from view" onClick={() => forgetSession(session)}>X</button>
+                      </div>
                     </div>
                   );
                 })}
@@ -424,33 +552,75 @@ export function Admin() {
             )}
           </section>
         ) : tab === "staging" ? (
-          <section className="admin-panel">
-            <div className="admin-log-toolbar">
-              <h2>Staged VMs</h2>
-              <div className="admin-toolbar-actions">
-                <button onClick={loadStaged}>Refresh</button>
-                <button className="primary" onClick={refillStaging}>Refill</button>
-                <button className="danger" onClick={deleteAllVms}>Delete All VMs</button>
+          <>
+            <section className="admin-panel">
+              <div className="admin-log-toolbar">
+                <h2>Warm Pool Targets</h2>
+                <div className="admin-toolbar-actions">
+                  <button onClick={() => { void loadStaged(); void loadStagingTargets(); }}>Refresh</button>
+                  <button className="primary" onClick={refillStaging}>Refill</button>
+                </div>
               </div>
-            </div>
-            {stagedVms.length === 0 ? (
-              <div className="empty">No staged VMs are ready yet.</div>
-            ) : (
-              <div className="admin-session-list">
-                {stagedVms.map((vm) => (
-                  <div key={vm.id} className="admin-session-row">
-                    <div>
-                      <div className="name">{vm.template_name}</div>
-                      <div className="meta">VM {vm.proxmox_vmid} · {vm.proxmox_node} · {vm.guest_ip ?? "no IP yet"}</div>
+              {stagingTargets.length === 0 ? (
+                <div className="empty">No enabled templates found.</div>
+              ) : (
+                <div className="admin-session-list">
+                  {stagingTargets.map((target) => (
+                    <div key={target.templateId} className="staging-target-row">
+                      <div>
+                        <div className="name">{target.templateName}</div>
+                        <div className="meta">{target.nodes.join(", ")} · {target.currentLive} live staged VM(s)</div>
+                      </div>
+                      <label>
+                        <span>Ready per node</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={20}
+                          value={target.poolSize}
+                          onChange={(e) => updateLocalStagingTarget(target.templateId, Number(e.target.value))}
+                        />
+                      </label>
+                      <button onClick={() => saveStagingTarget(target)}>Save</button>
                     </div>
-                    <span className={`status-pill ${vm.status}`}>{vm.status}</span>
-                    <div className="meta">{vm.failure_reason ?? "warm inventory only"}</div>
-                    <button className="danger" onClick={() => destroyStagedVm(vm)}>Destroy</button>
-                  </div>
-                ))}
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="admin-panel">
+              <div className="admin-log-toolbar">
+                <h2>Staged VMs</h2>
+                <div className="admin-toolbar-actions">
+                  <button onClick={loadStaged}>Refresh</button>
+                  <button className="primary" onClick={refillStaging}>Refill</button>
+                  <button className="danger" onClick={deleteAllVms}>Delete All VMs</button>
+                </div>
               </div>
-            )}
-          </section>
+              {stagedVms.length === 0 ? (
+                <div className="empty">No staged VMs are ready yet.</div>
+              ) : (
+                <div className="admin-session-list">
+                  {stagedVms.map((vm) => (
+                    <div key={vm.id} className="admin-session-row">
+                      <div>
+                        <div className="name">{vm.template_name}</div>
+                        <div className="meta">VM {vm.proxmox_vmid} · {vm.proxmox_node} · {vm.guest_ip ?? "no IP yet"}</div>
+                      </div>
+                      <span className={`status-pill ${vm.status}`}>{vm.status}</span>
+                      <div className="meta">{vm.failure_reason ?? "warm inventory only"}</div>
+                      <div className="row-actions">
+                        <button className="danger" onClick={() => destroyStagedVm(vm)}>Destroy</button>
+                        <button className="icon-danger" title="Remove from view" onClick={() => forgetStagedVm(vm)}>X</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
+        ) : tab === "import" ? (
+          <ImportWizard />
         ) : tab === "announcements" ? (
           <>
             <section className="admin-panel">

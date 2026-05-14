@@ -10,12 +10,13 @@ import { many, one, query } from "../db/client";
 import { AuthedRequest, requireAdmin, requireAuth } from "../middleware/auth";
 import { HttpError } from "../middleware/errorHandler";
 import { audit } from "../services/audit";
-import { listAllLiveSessions } from "../services/sessionManager";
+import { getSessionById, listAllLiveSessions, markSessionStopped } from "../services/sessionManager";
 import { proxmox } from "../services/proxmox";
 import { ensureAllStagedVms } from "../services/stagingMaintainer";
 import { cleanupQueue } from "../jobs/queues";
 import { deleteStagedVm, getStagedVmById, listStagedVms } from "../services/staging";
 import { releaseVmid } from "../services/vmidPool";
+import { listStagingTargets, setStagingPoolSize } from "../services/stagingSettings";
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -318,6 +319,24 @@ router.post("/sessions/:id/stop", async (req, res) => {
   res.json({ ok: true });
 });
 
+router.post("/sessions/:id/forget", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "invalid session id");
+
+  const session = await getSessionById(id);
+  if (!session) throw new HttpError(404, "session not found");
+
+  await markSessionStopped(id);
+  await releaseVmid(session.proxmox_vmid).catch(() => undefined);
+  await audit({
+    action: "admin.forget_session",
+    sessionId: id,
+    details: { id, vmId: session.proxmox_vmid, node: session.proxmox_node },
+    ipAddress: req.ip,
+  });
+  res.json({ ok: true });
+});
+
 router.post("/sessions/stop-all", async (req, res) => {
   const sessions = await listAllLiveSessions();
   for (const session of sessions) {
@@ -346,6 +365,31 @@ router.post("/staged/ensure", async (req, res) => {
   res.json({ ok: true });
 });
 
+router.get("/staging-targets", async (_req, res) => {
+  res.json(await listStagingTargets());
+});
+
+const stagingPoolSchema = z.object({
+  poolSize: z.number().int().min(0).max(20),
+});
+
+router.patch("/staging-targets/:templateId", async (req, res) => {
+  const template = getTemplates().find((item) => item.id === req.params.templateId);
+  if (!template) throw new HttpError(404, "template not found");
+
+  const parse = stagingPoolSchema.safeParse(req.body);
+  if (!parse.success) throw new HttpError(400, "invalid staging target payload", parse.error.flatten());
+
+  await setStagingPoolSize(template.id, parse.data.poolSize);
+  await ensureAllStagedVms();
+  await audit({
+    action: "admin.update_staging_pool",
+    details: { templateId: template.id, poolSize: parse.data.poolSize },
+    ipAddress: req.ip,
+  });
+  res.json({ ok: true });
+});
+
 router.delete("/staged/:id", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "invalid staged VM id");
@@ -367,6 +411,23 @@ router.delete("/staged/:id", async (req, res) => {
   }
 
   await ensureAllStagedVms();
+  res.json({ ok: true });
+});
+
+router.post("/staged/:id/forget", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "invalid staged VM id");
+
+  const staged = await getStagedVmById(id);
+  if (!staged) throw new HttpError(404, "staged VM not found");
+
+  await deleteStagedVm(id);
+  await releaseVmid(staged.proxmox_vmid).catch(() => undefined);
+  await audit({
+    action: "admin.forget_staged",
+    details: { id, templateId: staged.template_id, vmId: staged.proxmox_vmid, node: staged.proxmox_node },
+    ipAddress: req.ip,
+  });
   res.json({ ok: true });
 });
 
