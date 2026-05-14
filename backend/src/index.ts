@@ -82,6 +82,8 @@ async function main() {
   server.removeAllListeners("upgrade");
 
   server.on("upgrade", (req, socket, head) => {
+    (socket as any).setNoDelay?.(true);
+    (socket as any).setKeepAlive?.(true, 30_000);
     const { pathname } = parseUrl(req.url || "");
 
     if (pathname === "/ws/novnc") {

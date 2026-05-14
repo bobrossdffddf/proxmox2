@@ -57,6 +57,8 @@ export function createNoVncProxy() {
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 
   wss.on("connection", async (browserWs, request) => {
+    (browserWs as any)._socket?.setNoDelay?.(true);
+    (browserWs as any)._socket?.setKeepAlive?.(true, 30_000);
     const url = parseUrl(request.url || "", true);
     const sessionPublicId = url.query.session as string;
     const token = url.query.token as string;
@@ -92,6 +94,8 @@ export function createNoVncProxy() {
       let serverBuf = Buffer.alloc(0); // accumulator for partial server messages
 
       proxmoxWs.on("open", () => {
+        (proxmoxWs as any)._socket?.setNoDelay?.(true);
+        (proxmoxWs as any)._socket?.setKeepAlive?.(true, 30_000);
         logger.info({ vmId: session.proxmox_vmid }, "proxmox VNC ws opened");
       });
 

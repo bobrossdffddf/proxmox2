@@ -10,6 +10,7 @@ const PROVISION_ETA_SECONDS = 90;
 const CLIPBOARD_HISTORY_KEY = "wcta.console.clipboardHistory";
 
 type ScalingMode = "scale" | "viewport" | "native";
+type PerformanceMode = "speed" | "balanced" | "quality";
 
 function loadClipboardHistory(): string[] {
   try {
@@ -102,7 +103,8 @@ export function Console({ onExit }: Props) {
   const [clipboardText, setClipboardText] = useState("");
   const [remoteClipboard, setRemoteClipboard] = useState("");
   const [clipboardHistory, setClipboardHistory] = useState<string[]>(() => loadClipboardHistory());
-  const [scalingMode, setScalingMode] = useState<ScalingMode>("scale");
+  const [scalingMode, setScalingMode] = useState<ScalingMode>("viewport");
+  const [performanceMode, setPerformanceMode] = useState<PerformanceMode>("speed");
   const consoleRef = useRef<ConsoleKeyHandle | null>(null);
 
   // Poll until running
@@ -137,6 +139,14 @@ export function Console({ onExit }: Props) {
     window.addEventListener("wcta:remote-clipboard", handler);
     return () => window.removeEventListener("wcta:remote-clipboard", handler);
   }, []);
+
+  useEffect(() => {
+    if (!sessionId || session?.status !== "running") return;
+    const interval = setInterval(() => {
+      api.heartbeat(sessionId).catch(() => undefined);
+    }, 10_000);
+    return () => clearInterval(interval);
+  }, [sessionId, session?.status]);
 
   async function stop() {
     if (!sessionId) return;
@@ -215,9 +225,14 @@ export function Console({ onExit }: Props) {
             <div className="console-tool-actions" aria-label="Console tools">
               <span>View</span>
               <select value={scalingMode} onChange={(e) => setScalingMode(e.target.value as ScalingMode)} title="Scaling mode">
+                <option value="viewport">Fit fast</option>
                 <option value="scale">Fit + resize</option>
-                <option value="viewport">Fit only</option>
                 <option value="native">Native</option>
+              </select>
+              <select value={performanceMode} onChange={(e) => setPerformanceMode(e.target.value as PerformanceMode)} title="Performance mode">
+                <option value="speed">Speed</option>
+                <option value="balanced">Balanced</option>
+                <option value="quality">Quality</option>
               </select>
               <button title="Download screenshot" onClick={downloadScreenshot}>Screenshot</button>
               <button title="Toggle fullscreen" onClick={toggleFullscreen}>Fullscreen</button>
@@ -265,7 +280,12 @@ export function Console({ onExit }: Props) {
       {!error && isStarting && <StartupProgress session={session!} />}
 
       {!error && session && session.status === "running" && (
-        <NoVNCConsole ref={consoleRef} sessionPublicId={sessionId} scalingMode={scalingMode} />
+        <NoVNCConsole
+          ref={consoleRef}
+          sessionPublicId={sessionId}
+          scalingMode={scalingMode}
+          performanceMode={performanceMode}
+        />
       )}
 
       {!error && session && session.status !== "running" && !isStarting && (

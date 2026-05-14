@@ -5,6 +5,7 @@ import { getToken } from "../api";
 interface NoVNCConsoleProps {
   sessionPublicId: string;
   scalingMode: "scale" | "viewport" | "native";
+  performanceMode: "speed" | "balanced" | "quality";
 }
 
 export interface ConsoleKeyHandle {
@@ -23,7 +24,7 @@ interface VncHandle {
 }
 
 export const NoVNCConsole = forwardRef<ConsoleKeyHandle, NoVNCConsoleProps>(function NoVNCConsole(
-  { sessionPublicId, scalingMode },
+  { sessionPublicId, scalingMode, performanceMode },
   ref
 ) {
   const [status, setStatus] = useState("Connecting…");
@@ -67,6 +68,11 @@ export const NoVNCConsole = forwardRef<ConsoleKeyHandle, NoVNCConsoleProps>(func
 
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const url = `${proto}//${window.location.host}/ws/novnc?session=${sessionPublicId}&token=${token}`;
+  const perf = {
+    speed: { quality: 3, compression: 6 },
+    balanced: { quality: 5, compression: 3 },
+    quality: { quality: 8, compression: 1 },
+  }[performanceMode];
 
   if (error) {
     return (
@@ -95,8 +101,8 @@ export const NoVNCConsole = forwardRef<ConsoleKeyHandle, NoVNCConsoleProps>(func
         style={{ width: "100%", height: "100%" }}
         ref={vncRef}
         resizeSession={scalingMode === "scale"}
-        qualityLevel={6}
-        compressionLevel={2}
+        qualityLevel={perf.quality}
+        compressionLevel={perf.compression}
         onConnect={() => setStatus("Connected")}
         onClipboard={(e: any) => {
           const text = e?.detail?.text;

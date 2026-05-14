@@ -125,9 +125,11 @@ function buildConnectionConfig(args: {
   const settings: Record<string, string | number | boolean> = {
     hostname: args.host,
     port: args.port,
-    width: 1280,
-    height: 800,
+    width: 1024,
+    height: 768,
     dpi: 96,
+    audio: false,
+    "disable-audio": true,
   };
 
   if (args.protocol === "rdp") {
@@ -135,10 +137,12 @@ function buildConnectionConfig(args: {
     settings.password = args.password;
     settings["ignore-cert"] = true;
     settings.security = "any";        // accept whatever the server offers
-    settings["enable-wallpaper"] = true;
-    settings["enable-theming"] = true;
-    settings["enable-font-smoothing"] = true;
-    settings["enable-desktop-composition"] = true;
+    settings["enable-wallpaper"] = false;
+    settings["enable-theming"] = false;
+    settings["enable-font-smoothing"] = false;
+    settings["enable-desktop-composition"] = false;
+    settings["enable-menu-animations"] = false;
+    settings["disable-bitmap-caching"] = false;
   } else if (args.protocol === "vnc") {
     // QEMU VNC console does not use authentication by default
     // and does not support RDP-specific settings.
