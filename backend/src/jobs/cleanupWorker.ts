@@ -26,6 +26,22 @@ import {
 import { releaseVmid } from "../services/vmidPool";
 import { CleanupJobData } from "./queues";
 
+function shouldForgetTrackedVm(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return [
+    "404",
+    "not found",
+    "does not exist",
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "EHOSTUNREACH",
+    "ETIMEDOUT",
+    "timeout",
+    "No route to host",
+    "Unknown Proxmox node",
+  ].some((needle) => msg.toLowerCase().includes(needle.toLowerCase()));
+}
+
 export function startCleanupWorker(): Worker<CleanupJobData> {
   const worker = new Worker<CleanupJobData>(
     "vm-cleanup",
@@ -67,9 +83,22 @@ export function startCleanupWorker(): Worker<CleanupJobData> {
           }
         }
 
-        // 3. Delete clone
-        const deleteUpid = await proxmox.deleteVM(node, vmId);
-        await proxmox.waitForTask(node, deleteUpid, 120_000);
+        // 3. Delete clone. If Proxmox says the VM/node is unreachable or the
+        // VM no longer exists, clear our tracking so the cleanup does not loop
+        // forever after an admin/user delete.
+        try {
+          const deleteUpid = await proxmox.deleteVM(node, vmId);
+          await proxmox.waitForTask(node, deleteUpid, 120_000);
+        } catch (err) {
+          if (!shouldForgetTrackedVm(err)) throw err;
+          logger.warn({ sessionId, vmId, node, err: String(err) }, "forgetting unreachable/missing VM during cleanup");
+          await audit({
+            userId: session.user_id,
+            action: "vm.cleanup_forgot_unreachable",
+            sessionId: session.id,
+            details: { reason, vmId, node, error: String(err) },
+          });
+        }
 
         // 4. Release VMID
         await releaseVmid(vmId);

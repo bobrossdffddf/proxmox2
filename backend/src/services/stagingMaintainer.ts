@@ -6,8 +6,8 @@ import { logger } from "./logger";
 
 const STAGED_TARGET_PER_TEMPLATE = 1;
 
-export async function ensureStagedVm(templateId: string): Promise<void> {
-  const liveForTemplate = await countLiveStagedVms(templateId);
+async function ensureStagedVmForNode(templateId: string, node?: string): Promise<void> {
+  const liveForTemplate = await countLiveStagedVms(templateId, node);
   if (liveForTemplate >= STAGED_TARGET_PER_TEMPLATE) return;
 
   const physicalCount = (await countActiveSessions()) + (await countAllLiveStagedVms());
@@ -16,7 +16,7 @@ export async function ensureStagedVm(templateId: string): Promise<void> {
     return;
   }
 
-  const jobId = `stage-${templateId}`;
+  const jobId = node ? `stage-${templateId}-${node}` : `stage-${templateId}`;
   const existingJob = await provisioningQueue.getJob(jobId);
   if (existingJob) {
     const state = await existingJob.getState();
@@ -24,7 +24,15 @@ export async function ensureStagedVm(templateId: string): Promise<void> {
     await existingJob.remove().catch(() => undefined);
   }
 
-  await provisioningQueue.add("stage", { templateId, staged: true }, { jobId });
+  await provisioningQueue.add("stage", { templateId, staged: true, targetNode: node }, { jobId });
+}
+
+export async function ensureStagedVm(templateId: string): Promise<void> {
+  const template = getTemplates().find((item) => item.id === templateId);
+  const nodes = template?.proxmox_template_ids ? Object.keys(template.proxmox_template_ids) : [undefined];
+  for (const node of nodes) {
+    await ensureStagedVmForNode(templateId, node);
+  }
 }
 
 export async function ensureAllStagedVms(): Promise<void> {

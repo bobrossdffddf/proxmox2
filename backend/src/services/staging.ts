@@ -33,12 +33,14 @@ export async function claimReadyStagedVm(templateId: string): Promise<StagedVmRo
   );
 }
 
-export async function countLiveStagedVms(templateId: string): Promise<number> {
+export async function countLiveStagedVms(templateId: string, node?: string): Promise<number> {
   const row = await one<{ count: string }>(
     `SELECT COUNT(*)::text AS count
      FROM staged_vms
-     WHERE template_id=$1 AND status IN ('queued','provisioning','running')`,
-    [templateId]
+     WHERE template_id=$1
+       AND ($2::text IS NULL OR proxmox_node=$2)
+       AND status IN ('queued','provisioning','running')`,
+    [templateId, node ?? null]
   );
   return Number(row?.count ?? 0);
 }

@@ -8,6 +8,21 @@ A "template" in WCTARange is a Proxmox template VM on your cluster that:
 
 Templates aren't started directly. WCTARange keeps booted clones staged, assigns each clone to exactly one user, and deletes that clone when the user is done. Snapshots are optional. If `snapshot_name` is blank or omitted in `config/templates.yaml`, cleanup skips rollback and simply deletes the clone.
 
+## Multi-node templates
+
+Linked clones are fastest when the template lives on the same node/storage as the clone. If your Proxmox nodes use local storage, make one template copy per node and give each copy its own VMID. Then use `proxmox_template_ids`:
+
+```yaml
+  - id: windows11_baseline
+    name: Windows 11
+    proxmox_template_id: 9001
+    proxmox_template_ids:
+      pve-node-1: 9001
+      pve-node-2: 9101
+```
+
+WCTARange will keep one staged clone per configured node and choose from those warm VMs when users launch. If a node shows unreachable, check that `config/nodes.yaml` uses the exact Proxmox node name and an API-reachable host/IP for that node.
+
 ## Windows 11 / Server 2022 template
 
 1. Create a VM the normal way. Install Windows, run Windows Update.

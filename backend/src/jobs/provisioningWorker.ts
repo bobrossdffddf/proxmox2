@@ -27,7 +27,7 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
   const worker = new Worker<ProvisioningJobData>(
     "vm-provisioning",
     async (job) => {
-      const { userId, templateId, staged } = job.data;
+      const { userId, templateId, staged, targetNode } = job.data;
       logger.info({ jobId: job.id, userId, templateId, staged }, "provisioning job start");
 
       if (!staged) {
@@ -48,13 +48,19 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
         throw new Error(`Unknown or disabled template: ${templateId}`);
       }
 
-      const templateNode = await proxmox.findVmNode(template.proxmox_template_id);
-      if (!templateNode) {
+      const templateIdsByNode = template.proxmox_template_ids;
+      if (targetNode && templateIdsByNode && !templateIdsByNode[targetNode]) {
+        throw new Error(`Template ${templateId} is not configured on target node ${targetNode}`);
+      }
+      const node = targetNode ?? (templateIdsByNode
+        ? await proxmox.selectLeastLoadedNodeFrom(Object.keys(templateIdsByNode))
+        : await proxmox.findVmNode(template.proxmox_template_id));
+      if (!node) {
         throw new Error(
-          `Could not find template VMID ${template.proxmox_template_id} on any node in the cluster`
+          `Could not find template VMID ${template.proxmox_template_id} on any reachable node in the cluster`
         );
       }
-      const node = templateNode;
+      const proxmoxTemplateId = templateIdsByNode?.[node] ?? template.proxmox_template_id;
       const vmId = await allocateVmid();
 
       const session = staged
@@ -66,7 +72,7 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
             protocol: template.protocol,
             proxmoxNode: node,
             proxmoxVmid: vmId,
-            proxmoxTemplateId: template.proxmox_template_id,
+            proxmoxTemplateId,
             snapshotName: template.snapshot_name,
             guestPort: template.port,
             guestUsername: template.username,
@@ -88,7 +94,7 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
         const vmName = `wcta-${safe(templateId)}-${owner}-${vmId}`.slice(0, 60);
         const cloneUpid = await proxmox.cloneTemplate({
           node,
-          templateId: template.proxmox_template_id,
+          templateId: proxmoxTemplateId,
           newVmId: vmId,
           name: vmName,
         });
@@ -123,7 +129,7 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
             protocol: template.protocol,
             proxmox_node: node,
             proxmox_vmid: vmId,
-            proxmox_template_id: template.proxmox_template_id,
+            proxmox_template_id: proxmoxTemplateId,
             snapshot_name: template.snapshot_name,
             guest_port: template.port,
             guest_username: template.username,

@@ -69,6 +69,7 @@ const templateSchema = z.object({
   description: z.string().default(""),
   icon: z.enum(["windows", "server", "linux", "network", "generic"]).default("generic"),
   proxmox_template_id: z.number().int().positive(),
+  proxmox_template_ids: z.record(z.number().int().positive()).optional(),
   snapshot_name: z.string().nullable().optional().transform((value) => value ?? ""),
   protocol: z.enum(["rdp", "vnc"]),
   port: z.number().int().default(3389),
@@ -109,6 +110,7 @@ export interface TemplateConfig {
   memory_mb: number;
   enabled: boolean;
   color?: string;
+  proxmox_template_ids?: Record<string, number>;
 }
 
 function readYaml<T>(file: string, schema: z.ZodType<T>): T {

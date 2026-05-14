@@ -155,6 +155,26 @@ export class ProxmoxClusterClient {
     return scored[0].node;
   }
 
+  async selectLeastLoadedNodeFrom(nodeNames: string[]): Promise<string> {
+    const allowed = new Set(nodeNames);
+    const healthy = (await this.listHealthyNodes()).filter((node) => allowed.has(node.name));
+    if (healthy.length === 0) {
+      throw new Error(`No reachable candidate Proxmox nodes: ${nodeNames.join(", ")}`);
+    }
+
+    const scored: Array<{ node: string; score: number; cpu: number; mem: number }> = [];
+    for (const node of healthy) {
+      const s = await this.getNodeStatus(node.name);
+      const cpuPct = s.cpu * 100;
+      const memPct = (s.memory.used / s.memory.total) * 100;
+      const score = 0.6 * cpuPct + 0.4 * memPct;
+      scored.push({ node: node.name, score, cpu: cpuPct, mem: memPct });
+    }
+    scored.sort((a, b) => a.score - b.score);
+    logger.info({ nodes: scored }, "candidate node load snapshot");
+    return scored[0].node;
+  }
+
   /**
    * Clone a template VM into a new VM. Uses linked clones (full=0) for speed.
    * Returns the UPID Proxmox uses to identify the clone task.

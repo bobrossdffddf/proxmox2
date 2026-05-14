@@ -20,6 +20,22 @@ import { releaseVmid } from "../services/vmidPool";
 const router = Router();
 router.use(requireAuth, requireAdmin);
 
+function shouldForgetTrackedVm(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return [
+    "404",
+    "not found",
+    "does not exist",
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "EHOSTUNREACH",
+    "ETIMEDOUT",
+    "timeout",
+    "No route to host",
+    "Unknown Proxmox node",
+  ].some((needle) => msg.toLowerCase().includes(needle.toLowerCase()));
+}
+
 async function destroyStagedVmById(id: number): Promise<{ vmId: number; templateId: string }> {
   const staged = await getStagedVmById(id);
   if (!staged) throw new HttpError(404, "staged VM not found");
@@ -37,6 +53,10 @@ async function destroyStagedVmById(id: number): Promise<{ vmId: number; template
     await releaseVmid(staged.proxmox_vmid);
     return { vmId: staged.proxmox_vmid, templateId: staged.template_id };
   } catch (err) {
+    if (shouldForgetTrackedVm(err)) {
+      await releaseVmid(staged.proxmox_vmid).catch(() => undefined);
+      return { vmId: staged.proxmox_vmid, templateId: staged.template_id };
+    }
     throw new HttpError(500, String(err));
   }
 }

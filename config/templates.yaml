@@ -9,6 +9,11 @@
 #   description - one-line summary shown under the title
 #   icon        - one of: windows, server, linux, network, generic
 #   proxmox_template_id - the VMID of the template on Proxmox (e.g. 9001)
+#                         For multi-node local storage, use proxmox_template_ids
+#                         instead and put a template copy on each node:
+#                         proxmox_template_ids:
+#                           pve-node-1: 9001
+#                           pve-node-2: 9101
 #   snapshot_name - optional; leave blank/omit for imported Proxmox templates.
 #                   Cleanup deletes clones, so snapshots are not required.
 #   protocol    - "rdp" or "vnc"

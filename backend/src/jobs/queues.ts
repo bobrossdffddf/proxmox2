@@ -12,6 +12,7 @@ export interface ProvisioningJobData {
   templateId: string;
   userId?: number;
   staged?: boolean;
+  targetNode?: string;
 }
 
 export interface CleanupJobData {
