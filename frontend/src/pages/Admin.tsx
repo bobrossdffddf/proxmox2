@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { AdminSession, AdminUser, Announcement, api, AuditLog, StagedVm } from "../api";
+import { AdminSession, AdminUser, Announcement, api, AuditLog, ResourceReport, StagedVm } from "../api";
 
-type Tab = "overview" | "users" | "sessions" | "staging" | "announcements" | "logs";
+type Tab = "overview" | "users" | "sessions" | "resources" | "staging" | "announcements" | "logs";
 
 export function Admin() {
   const [tab, setTab] = useState<Tab>("overview");
@@ -12,6 +12,7 @@ export function Admin() {
   const [sessions, setSessions] = useState<AdminSession[]>([]);
   const [stagedVms, setStagedVms] = useState<StagedVm[]>([]);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [resources, setResources] = useState<ResourceReport | null>(null);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [form, setForm] = useState({
     username: "",
@@ -49,11 +50,16 @@ export function Admin() {
     setAnnouncements(await api.adminAnnouncements());
   };
 
+  const loadResources = async () => {
+    setResources(await api.adminResources());
+  };
+
   useEffect(() => {
     loadUsers().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load users" }));
     loadSessions().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load sessions" }));
     loadStaged().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load staging" }));
     loadAnnouncements().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load announcements" }));
+    loadResources().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load resources" }));
   }, []);
 
   useEffect(() => {
@@ -196,6 +202,18 @@ export function Admin() {
     }
   };
 
+  const fmtBytes = (value?: number | null) => {
+    if (!value) return "0 MB";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let n = value;
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) {
+      n /= 1024;
+      i += 1;
+    }
+    return `${n >= 10 ? n.toFixed(0) : n.toFixed(1)} ${units[i]}`;
+  };
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -215,6 +233,7 @@ export function Admin() {
             <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>Overview</button>
             <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}>Users</button>
             <button className={tab === "sessions" ? "active" : ""} onClick={() => setTab("sessions")}>Sessions</button>
+            <button className={tab === "resources" ? "active" : ""} onClick={() => setTab("resources")}>Resources</button>
             <button className={tab === "staging" ? "active" : ""} onClick={() => setTab("staging")}>Staging</button>
             <button className={tab === "announcements" ? "active" : ""} onClick={() => setTab("announcements")}>Announcements</button>
             <button className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")}>Logs</button>
@@ -250,6 +269,7 @@ export function Admin() {
               <h2>Quick Actions</h2>
               <div className="admin-quick-actions">
                 <button onClick={loadSessions}>Refresh Active VMs</button>
+                <button onClick={() => { void loadResources(); setTab("resources"); }}>Resource Monitor</button>
                 <button className="danger" onClick={stopAllSessions}>Stop All Active VMs</button>
                 <button className="danger" onClick={deleteAllVms}>Delete All VMs</button>
                 <button className="primary" onClick={refillStaging}>Refill Staging</button>
@@ -328,6 +348,79 @@ export function Admin() {
                   );
                 })}
               </div>
+            )}
+          </section>
+        ) : tab === "resources" ? (
+          <section className="admin-panel">
+            <div className="admin-log-toolbar">
+              <h2>Resource Monitor</h2>
+              <button onClick={loadResources}>Refresh</button>
+            </div>
+            {!resources ? (
+              <div className="empty">Resource data is loading.</div>
+            ) : (
+              <>
+                <div className="resource-grid">
+                  {resources.nodes.map((node) => (
+                    <div key={node.name} className="resource-card">
+                      <div className="name">{node.name}</div>
+                      <div className="meta">{node.reachable ? "reachable" : "unreachable"}</div>
+                      <div className="resource-meter">
+                        <span>CPU</span>
+                        <strong>{node.cpuPct ?? 0}%</strong>
+                      </div>
+                      <div className="resource-meter">
+                        <span>RAM</span>
+                        <strong>{fmtBytes(node.memoryUsed)} / {fmtBytes(node.memoryTotal)}</strong>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <h2>User Usage</h2>
+                <div className="admin-session-list">
+                  {resources.users.map((user) => (
+                    <div key={user.userId} className="resource-row">
+                      <div>
+                        <div className="name">{user.username}</div>
+                        <div className="meta">{user.activeVms} active VM(s)</div>
+                      </div>
+                      <div className="meta">CPU {user.cpuPct.toFixed(1)}%</div>
+                      <div className="meta">RAM {fmtBytes(user.mem)} / {fmtBytes(user.maxmem)}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <h2>Most Used Images</h2>
+                <div className="admin-session-list">
+                  {resources.templates.map((template) => (
+                    <div key={template.templateId} className="resource-row">
+                      <div>
+                        <div className="name">{template.templateName}</div>
+                        <div className="meta">{template.templateId}</div>
+                      </div>
+                      <div className="meta">{template.activeVms} active VM(s)</div>
+                      <div className="meta">CPU {template.cpuPct.toFixed(1)}%</div>
+                    </div>
+                  ))}
+                </div>
+
+                <h2>VM Usage</h2>
+                <div className="admin-session-list">
+                  {resources.vms.map((vm) => (
+                    <div key={vm.id} className="resource-row">
+                      <div>
+                        <div className="name">VM {vm.proxmox_vmid} · {vm.template_name}</div>
+                        <div className="meta">{vm.username} · {vm.proxmox_node} · {vm.metrics?.status ?? vm.status}</div>
+                      </div>
+                      <div className="meta">CPU {(vm.metrics?.cpuPct ?? 0).toFixed(1)}%</div>
+                      <div className="meta">RAM {fmtBytes(vm.metrics?.mem)} / {fmtBytes(vm.metrics?.maxmem)}</div>
+                      <div className="meta">Net {fmtBytes((vm.metrics?.netin ?? 0) + (vm.metrics?.netout ?? 0))}</div>
+                      <div className="meta">Disk {fmtBytes((vm.metrics?.diskread ?? 0) + (vm.metrics?.diskwrite ?? 0))}</div>
+                    </div>
+                  ))}
+                </div>
+              </>
             )}
           </section>
         ) : tab === "staging" ? (

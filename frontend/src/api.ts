@@ -95,6 +95,50 @@ export interface Announcement {
   created_at: string;
 }
 
+export interface ResourceReport {
+  generatedAt: string;
+  nodes: Array<{
+    name: string;
+    enabled: boolean;
+    reachable: boolean;
+    cpuPct?: number;
+    memoryUsed?: number;
+    memoryTotal?: number;
+    error?: string;
+  }>;
+  users: Array<{
+    userId: number;
+    username: string;
+    activeVms: number;
+    cpuPct: number;
+    mem: number;
+    maxmem: number;
+  }>;
+  templates: Array<{
+    templateId: string;
+    templateName: string;
+    activeVms: number;
+    cpuPct: number;
+    mem: number;
+  }>;
+  vms: Array<AdminSession & {
+    username: string;
+    metrics: null | {
+      status: string;
+      cpuPct: number;
+      cpus: number | null;
+      mem: number | null;
+      maxmem: number | null;
+      netin: number;
+      netout: number;
+      diskread: number;
+      diskwrite: number;
+      uptime: number;
+    };
+    error?: string;
+  }>;
+}
+
 export interface TileTemplate {
   id: string;
   name: string;
@@ -159,6 +203,7 @@ export const api = {
   resetUserPassword: (id: number, password: string) =>
     request<{ ok: true }>(`/api/admin/users/${id}/password`, { method: "POST", body: JSON.stringify({ password }) }),
   userAudit: (id: number) => request<AuditLog[]>(`/api/admin/users/${id}/audit`),
+  adminResources: () => request<ResourceReport>("/api/admin/resources"),
   adminSessions: () => request<AdminSession[]>("/api/admin/sessions"),
   stopAdminSession: (id: number) =>
     request<{ ok: true }>(`/api/admin/sessions/${id}/stop`, { method: "POST" }),

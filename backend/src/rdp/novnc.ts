@@ -54,7 +54,7 @@ const enum Phase {
 }
 
 export function createNoVncProxy() {
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 
   wss.on("connection", async (browserWs, request) => {
     const url = parseUrl(request.url || "", true);
@@ -84,6 +84,8 @@ export function createNoVncProxy() {
       const proxmoxWs = new WebSocket(proxmoxWsUrl, {
         headers: { Authorization: `PVEAPIToken=${env.PROXMOX_TOKEN_ID}=${env.PROXMOX_TOKEN_SECRET}` },
         rejectUnauthorized: env.PROXMOX_VERIFY_TLS,
+        perMessageDeflate: false,
+        handshakeTimeout: 10_000,
       });
 
       let phase: Phase = Phase.SERVER_VERSION;

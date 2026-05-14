@@ -10,12 +10,14 @@ export interface ConsoleKeyHandle {
   sendCtrlAltDel: () => void;
   sendKey: (keysym: number, code: string) => void;
   sendCombo: (keys: Array<{ keysym: number; code: string }>) => void;
+  pasteText: (text: string) => void;
 }
 
 interface VncHandle {
   sendKey: (keysym: number, code: string, down?: boolean) => void;
   sendCtrlAltDel: () => void;
   focus: () => void;
+  clipboardPaste: (text: string) => void;
 }
 
 export const NoVNCConsole = forwardRef<ConsoleKeyHandle, NoVNCConsoleProps>(function NoVNCConsole(
@@ -31,6 +33,12 @@ export const NoVNCConsole = forwardRef<ConsoleKeyHandle, NoVNCConsoleProps>(func
     vncRef.current?.focus();
   };
 
+  const sendCombo = (keys: Array<{ keysym: number; code: string }>) => {
+    for (const key of keys) vncRef.current?.sendKey(key.keysym, key.code, true);
+    for (const key of [...keys].reverse()) vncRef.current?.sendKey(key.keysym, key.code, false);
+    vncRef.current?.focus();
+  };
+
   useImperativeHandle(ref, () => ({
     sendCtrlAltDel: () => {
       vncRef.current?.sendCtrlAltDel();
@@ -38,13 +46,11 @@ export const NoVNCConsole = forwardRef<ConsoleKeyHandle, NoVNCConsoleProps>(func
     },
     sendKey,
     sendCombo,
+    pasteText: (text: string) => {
+      vncRef.current?.clipboardPaste(text);
+      vncRef.current?.focus();
+    },
   }));
-
-  const sendCombo = (keys: Array<{ keysym: number; code: string }>) => {
-    for (const key of keys) vncRef.current?.sendKey(key.keysym, key.code, true);
-    for (const key of [...keys].reverse()) vncRef.current?.sendKey(key.keysym, key.code, false);
-    vncRef.current?.focus();
-  };
 
   const token = getToken();
   if (!token) {
@@ -79,7 +85,16 @@ export const NoVNCConsole = forwardRef<ConsoleKeyHandle, NoVNCConsoleProps>(func
         scaleViewport
         style={{ width: "100%", height: "100%" }}
         ref={vncRef}
+        resizeSession
+        qualityLevel={6}
+        compressionLevel={2}
         onConnect={() => setStatus("Connected")}
+        onClipboard={(e: any) => {
+          const text = e?.detail?.text;
+          if (typeof text === "string") {
+            window.dispatchEvent(new CustomEvent("wcta:remote-clipboard", { detail: text }));
+          }
+        }}
         onDisconnect={(e: any) => {
           const clean = e?.detail?.clean;
           const reason = e?.detail?.reason;

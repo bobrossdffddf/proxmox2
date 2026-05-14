@@ -22,6 +22,19 @@ interface ProxmoxNodeStatus {
   memory: { used: number; total: number };
 }
 
+export interface ProxmoxVmStatus {
+  status: string;
+  cpu?: number;
+  cpus?: number;
+  mem?: number;
+  maxmem?: number;
+  netin?: number;
+  netout?: number;
+  diskread?: number;
+  diskwrite?: number;
+  uptime?: number;
+}
+
 interface ProxmoxResponse<T> {
   data: T;
 }
@@ -259,6 +272,20 @@ export class ProxmoxClusterClient {
       `/nodes/${node}/qemu/${vmId}/status/current`
     );
     return res.data.data.status;
+  }
+
+  async getVmCurrentStatus(node: string, vmId: number): Promise<ProxmoxVmStatus> {
+    const res = await this.clientFor(node).get<ProxmoxResponse<ProxmoxVmStatus>>(
+      `/nodes/${node}/qemu/${vmId}/status/current`
+    );
+    return res.data.data;
+  }
+
+  async getNodeStatus(node: string): Promise<ProxmoxNodeStatus> {
+    const res = await this.clientFor(node).get<ProxmoxResponse<ProxmoxNodeStatus>>(
+      `/nodes/${node}/status`
+    );
+    return res.data.data;
   }
 
   /**

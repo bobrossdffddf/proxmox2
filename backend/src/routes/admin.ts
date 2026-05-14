@@ -169,6 +169,116 @@ router.get("/sessions", async (_req, res) => {
   res.json(all);
 });
 
+router.get("/resources", async (_req, res) => {
+  const sessions = await many<{
+    id: number;
+    public_id: string;
+    user_id: number;
+    username: string;
+    template_id: string;
+    template_name: string;
+    proxmox_node: string;
+    proxmox_vmid: number;
+    status: string;
+    created_at: Date;
+  }>(
+    `SELECT s.id, s.public_id, s.user_id, u.username, s.template_id, s.template_name,
+            s.proxmox_node, s.proxmox_vmid, s.status, s.created_at
+     FROM sessions s
+     JOIN users u ON u.id=s.user_id
+     WHERE s.status IN ('queued','provisioning','running','cleaning','cleanup_failed')
+     ORDER BY s.created_at DESC`
+  );
+
+  const nodes = await Promise.all(getNodes().map(async (node) => {
+    try {
+      const status = await proxmox.getNodeStatus(node.name);
+      return {
+        name: node.name,
+        enabled: node.enabled,
+        reachable: true,
+        cpuPct: Math.round((status.cpu ?? 0) * 1000) / 10,
+        memoryUsed: status.memory.used,
+        memoryTotal: status.memory.total,
+      };
+    } catch (err) {
+      return {
+        name: node.name,
+        enabled: node.enabled,
+        reachable: false,
+        error: String(err),
+      };
+    }
+  }));
+
+  const vms = await Promise.all(sessions.map(async (session) => {
+    try {
+      const status = await proxmox.getVmCurrentStatus(session.proxmox_node, session.proxmox_vmid);
+      return {
+        ...session,
+        metrics: {
+          status: status.status,
+          cpuPct: Math.round((status.cpu ?? 0) * 1000) / 10,
+          cpus: status.cpus ?? null,
+          mem: status.mem ?? null,
+          maxmem: status.maxmem ?? null,
+          netin: status.netin ?? 0,
+          netout: status.netout ?? 0,
+          diskread: status.diskread ?? 0,
+          diskwrite: status.diskwrite ?? 0,
+          uptime: status.uptime ?? 0,
+        },
+      };
+    } catch (err) {
+      return {
+        ...session,
+        metrics: null,
+        error: String(err),
+      };
+    }
+  }));
+
+  const users = Array.from(
+    vms.reduce((map, vm) => {
+      const current = map.get(vm.user_id) ?? {
+        userId: vm.user_id,
+        username: vm.username,
+        activeVms: 0,
+        cpuPct: 0,
+        mem: 0,
+        maxmem: 0,
+      };
+      current.activeVms += 1;
+      current.cpuPct += vm.metrics?.cpuPct ?? 0;
+      current.mem += vm.metrics?.mem ?? 0;
+      current.maxmem += vm.metrics?.maxmem ?? 0;
+      map.set(vm.user_id, current);
+      return map;
+    }, new Map<number, { userId: number; username: string; activeVms: number; cpuPct: number; mem: number; maxmem: number }>())
+    .values()
+  ).sort((a, b) => b.activeVms - a.activeVms || b.cpuPct - a.cpuPct);
+
+  const templates = Array.from(
+    vms.reduce((map, vm) => {
+      const current = map.get(vm.template_id) ?? {
+        templateId: vm.template_id,
+        templateName: vm.template_name,
+        activeVms: 0,
+        cpuPct: 0,
+        mem: 0,
+      };
+      current.activeVms += 1;
+      current.cpuPct += vm.metrics?.cpuPct ?? 0;
+      current.mem += vm.metrics?.mem ?? 0;
+      map.set(vm.template_id, current);
+      return map;
+    }, new Map<string, { templateId: string; templateName: string; activeVms: number; cpuPct: number; mem: number }>())
+    .values()
+  ).sort((a, b) => b.activeVms - a.activeVms || b.cpuPct - a.cpuPct);
+
+  res.json({ nodes, vms, users, templates, generatedAt: new Date().toISOString() });
+});
+
 router.post("/sessions/:id/stop", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "invalid session id");

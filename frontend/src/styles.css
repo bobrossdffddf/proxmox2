@@ -551,6 +551,19 @@ h2 {
   flex-shrink: 0;
   flex-wrap: wrap;
 }
+.clipboard-bar {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr) auto auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 18px;
+  background: rgba(12, 19, 34, 0.98);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.clipboard-bar input {
+  min-width: 0;
+}
 .cred-label {
   font-size: 10px;
   text-transform: uppercase;
@@ -792,6 +805,41 @@ h2 {
   border-radius: 10px;
   padding: 12px;
 }
+.resource-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.resource-card,
+.resource-row {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
+.resource-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.resource-meter {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.resource-meter strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.resource-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) repeat(4, minmax(100px, auto));
+  gap: 12px;
+  align-items: center;
+}
 .admin-log-row {
   display: grid;
   grid-template-columns: minmax(220px, 0.7fr) minmax(260px, 1fr);
@@ -823,6 +871,8 @@ h2 {
   .announcement-form,
   .admin-user-row,
   .admin-session-row,
+  .resource-row,
+  .clipboard-bar,
   .admin-log-row {
     grid-template-columns: 1fr;
   }

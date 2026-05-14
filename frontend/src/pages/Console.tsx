@@ -82,6 +82,8 @@ export function Console({ onExit }: Props) {
   const { sessionId } = useParams<{ sessionId: string }>();
   const [session, setSession] = useState<SessionView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [clipboardText, setClipboardText] = useState("");
+  const [remoteClipboard, setRemoteClipboard] = useState("");
   const consoleRef = useRef<ConsoleKeyHandle | null>(null);
 
   // Poll until running
@@ -105,6 +107,15 @@ export function Console({ onExit }: Props) {
     return () => { cancelled = true; };
   }, [sessionId]);
 
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const text = (event as CustomEvent<string>).detail;
+      if (typeof text === "string") setRemoteClipboard(text);
+    };
+    window.addEventListener("wcta:remote-clipboard", handler);
+    return () => window.removeEventListener("wcta:remote-clipboard", handler);
+  }, []);
+
   async function stop() {
     if (!sessionId) return;
     if (!confirm("Stop this VM? Unsaved work will be lost.")) return;
@@ -115,6 +126,18 @@ export function Console({ onExit }: Props) {
 
   const isStarting = session && (session.status === "queued" || session.status === "provisioning");
   const sendCombo = (keys: Array<{ keysym: number; code: string }>) => consoleRef.current?.sendCombo(keys);
+  const pasteText = async () => {
+    let text = clipboardText;
+    if (!text && navigator.clipboard?.readText) {
+      text = await navigator.clipboard.readText().catch(() => "");
+      setClipboardText(text);
+    }
+    if (text) consoleRef.current?.pasteText(text);
+  };
+  const copyRemote = async () => {
+    if (!remoteClipboard) return;
+    await navigator.clipboard?.writeText(remoteClipboard).catch(() => undefined);
+  };
 
   return (
     <div className="console-shell">
@@ -143,6 +166,24 @@ export function Console({ onExit }: Props) {
       </div>
 
       {session && <CredentialsBadge session={session} />}
+
+      {session?.status === "running" && (
+        <div className="clipboard-bar">
+          <span className="cred-label">Clipboard</span>
+          <input
+            placeholder="Text to paste into the VM"
+            value={clipboardText}
+            onChange={(e) => setClipboardText(e.target.value)}
+          />
+          <button onClick={pasteText}>Paste to VM</button>
+          <button onClick={async () => setClipboardText(await navigator.clipboard?.readText().catch(() => "") ?? "")}>
+            Use Local Clipboard
+          </button>
+          <button disabled={!remoteClipboard} onClick={copyRemote}>
+            Copy From VM
+          </button>
+        </div>
+      )}
 
       {error && <div className="empty">{error}</div>}
 
