@@ -234,6 +234,14 @@ export const api = {
     request<{ ok: true }>(`/api/admin/staged/${id}/forget`, { method: "POST" }),
   deleteAllVms: () =>
     request<{ ok: true; activeQueued: number; stagedDestroyed: number }>("/api/admin/vms/all", { method: "DELETE" }),
+  deleteInactiveVms: () =>
+    request<{
+      ok: boolean;
+      kept: null | { vmId: number; node: string; name: string; status: string };
+      deleted: number;
+      failed: Array<{ vmid: number; node: string; name: string; error: string }>;
+      protected: number;
+    }>("/api/admin/vms/delete-inactive", { method: "POST" }),
   adminAnnouncements: () => request<Announcement[]>("/api/admin/announcements"),
   createAnnouncement: (payload: { title: string; message: string; active: boolean }) =>
     request<Announcement>("/api/admin/announcements", { method: "POST", body: JSON.stringify(payload) }),

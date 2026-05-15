@@ -35,6 +35,14 @@ export interface ProxmoxVmStatus {
   uptime?: number;
 }
 
+export interface ProxmoxClusterVm {
+  type: string;
+  vmid?: number;
+  node?: string;
+  name?: string;
+  status?: string;
+}
+
 interface ProxmoxResponse<T> {
   data: T;
 }
@@ -100,6 +108,20 @@ export class ProxmoxClusterClient {
       }
     }
     return null;
+  }
+
+  async listClusterVms(): Promise<ProxmoxClusterVm[]> {
+    for (const node of getNodes()) {
+      try {
+        const res = await this.clientFor(node.name).get<ProxmoxResponse<ProxmoxClusterVm[]>>(
+          `/cluster/resources?type=vm`
+        );
+        return res.data.data;
+      } catch (err) {
+        logger.debug({ node: node.name, err: String(err) }, "listClusterVms: node unreachable, trying next");
+      }
+    }
+    throw new Error("Could not read VM list from any Proxmox node");
   }
 
   /**

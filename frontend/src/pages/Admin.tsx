@@ -256,6 +256,25 @@ export function Admin() {
     }
   };
 
+  const deleteInactiveVms = async () => {
+    const ok = confirm(
+      "Delete inactive WCTARange VMs from Proxmox? This keeps one WCTARange VM, protects active user sessions, and removes stopped/offline extras."
+    );
+    if (!ok) return;
+    try {
+      const result = await api.deleteInactiveVms();
+      await Promise.all([loadSessions(), loadStaged(), loadStagingTargets(), loadResources()]);
+      const failedText = result.failed.length > 0 ? ` ${result.failed.length} failed.` : "";
+      const keptText = result.kept ? ` Kept VM ${result.kept.vmId}.` : " No VM kept.";
+      setMessage({
+        kind: result.failed.length > 0 ? "error" : "ok",
+        text: `Deleted ${result.deleted} inactive VM(s).${keptText}${failedText}`,
+      });
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof Error ? err.message : "Failed to delete inactive VMs" });
+    }
+  };
+
   const refillStaging = async () => {
     try {
       await api.ensureStaging();
@@ -397,6 +416,7 @@ export function Admin() {
                 <button onClick={() => { void loadResources(); setTab("resources"); }}>Resource Monitor</button>
                 <button className="danger" onClick={stopAllSessions}>Stop All Active VMs</button>
                 <button className="danger" onClick={deleteAllVms}>Delete All VMs</button>
+                <button className="danger" onClick={deleteInactiveVms}>Delete Inactive VM's</button>
                 <button className="primary" onClick={refillStaging}>Refill Staging</button>
                 <button onClick={() => setTab("announcements")}>Post Announcement</button>
               </div>
@@ -594,6 +614,7 @@ export function Admin() {
                 <div className="admin-toolbar-actions">
                   <button onClick={loadStaged}>Refresh</button>
                   <button className="primary" onClick={refillStaging}>Refill</button>
+                  <button className="danger" onClick={deleteInactiveVms}>Delete Inactive VM's</button>
                   <button className="danger" onClick={deleteAllVms}>Delete All VMs</button>
                 </div>
               </div>

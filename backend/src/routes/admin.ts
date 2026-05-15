@@ -464,6 +464,88 @@ router.delete("/vms/all", async (req, res) => {
   res.json({ ok: true, activeQueued: sessions.length, stagedDestroyed });
 });
 
+router.post("/vms/delete-inactive", async (req, res) => {
+  const protectedRows = await many<{ proxmox_vmid: number }>(
+    `SELECT proxmox_vmid FROM sessions WHERE status IN ('queued','provisioning','running','cleaning')`
+  );
+  const protectedVmids = new Set(protectedRows.map((row) => row.proxmox_vmid));
+
+  const clusterVms = await proxmox.listClusterVms();
+  const wctaVms = clusterVms
+    .filter((vm) => vm.type === "qemu" && vm.vmid && vm.node && /^wcta-/i.test(vm.name ?? ""))
+    .map((vm) => ({
+      vmid: vm.vmid!,
+      node: vm.node!,
+      name: vm.name ?? `VM ${vm.vmid}`,
+      status: vm.status ?? "unknown",
+    }))
+    .filter((vm) => !protectedVmids.has(vm.vmid));
+
+  const keep = [...wctaVms].sort((a, b) => {
+    const ar = a.status === "running" ? 0 : 1;
+    const br = b.status === "running" ? 0 : 1;
+    return ar - br || a.vmid - b.vmid;
+  })[0];
+  const deleteTargets = wctaVms.filter((vm) => vm.vmid !== keep?.vmid);
+  const deleted: Array<{ vmid: number; node: string; name: string }> = [];
+  const failed: Array<{ vmid: number; node: string; name: string; error: string }> = [];
+
+  for (const vm of deleteTargets) {
+    try {
+      if (vm.status === "running") {
+        try {
+          const stopUpid = await proxmox.powerOff(vm.node, vm.vmid, true);
+          await proxmox.waitForTask(vm.node, stopUpid, 60_000).catch(() => undefined);
+        } catch {
+          // Deletion below is the real cleanup step.
+        }
+      }
+      const deleteUpid = await proxmox.deleteVM(vm.node, vm.vmid);
+      await proxmox.waitForTask(vm.node, deleteUpid, 120_000);
+      deleted.push({ vmid: vm.vmid, node: vm.node, name: vm.name });
+      await releaseVmid(vm.vmid).catch(() => undefined);
+    } catch (err) {
+      if (shouldForgetTrackedVm(err)) {
+        deleted.push({ vmid: vm.vmid, node: vm.node, name: vm.name });
+        await releaseVmid(vm.vmid).catch(() => undefined);
+      } else {
+        failed.push({ vmid: vm.vmid, node: vm.node, name: vm.name, error: String(err) });
+      }
+    }
+  }
+
+  const deletedVmids = deleted.map((vm) => vm.vmid);
+  if (deletedVmids.length > 0) {
+    await query(
+      `UPDATE sessions
+       SET status='stopped', cleaned_up_at=NOW()
+       WHERE proxmox_vmid = ANY($1::int[])
+         AND status NOT IN ('stopped','failed')`,
+      [deletedVmids]
+    );
+    await query(`DELETE FROM staged_vms WHERE proxmox_vmid = ANY($1::int[])`, [deletedVmids]);
+  }
+
+  await audit({
+    action: "admin.delete_inactive_vms",
+    details: {
+      kept: keep ? { vmId: keep.vmid, node: keep.node, name: keep.name, status: keep.status } : null,
+      deleted,
+      failed,
+      protected: protectedVmids.size,
+    },
+    ipAddress: req.ip,
+  });
+
+  res.json({
+    ok: failed.length === 0,
+    kept: keep ? { vmId: keep.vmid, node: keep.node, name: keep.name, status: keep.status } : null,
+    deleted: deleted.length,
+    failed,
+    protected: protectedVmids.size,
+  });
+});
+
 const announcementSchema = z.object({
   title: z.string().min(1).max(120),
   message: z.string().min(1).max(2000),
