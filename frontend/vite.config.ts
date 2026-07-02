@@ -15,5 +15,15 @@ export default defineConfig({
   build: {
     outDir: "dist",
     sourcemap: false,
+    target: "es2020",
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Long-lived vendor chunk: app code changes don't invalidate
+          // the cached React bundle for returning users.
+          react: ["react", "react-dom", "react-router-dom"],
+        },
+      },
+    },
   },
 });

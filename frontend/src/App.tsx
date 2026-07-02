@@ -1,10 +1,17 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { api, AuthUser, getToken, setToken } from "./api";
 import { Login } from "./pages/Login";
 import { Dashboard } from "./pages/Dashboard";
-import { Console } from "./pages/Console";
-import { Admin } from "./pages/Admin";
+
+// Route-level code splitting: the console pulls in the whole VNC client and
+// the admin panel is admin-only, so neither belongs in the initial bundle.
+const Console = lazy(() => import("./pages/Console").then((m) => ({ default: m.Console })));
+const Admin = lazy(() => import("./pages/Admin").then((m) => ({ default: m.Admin })));
+
+function PageLoading() {
+  return <div className="login-shell"><div className="console-status">Loading…</div></div>;
+}
 
 export default function App() {
   const [user, setUser] = useState<AuthUser | null | undefined>(undefined);
@@ -22,24 +29,26 @@ export default function App() {
   }, []);
 
   if (user === undefined) {
-    return <div className="login-shell"><div className="console-status">Loading...</div></div>;
+    return <PageLoading />;
   }
 
   return (
-    <Routes>
-      <Route path="/login" element={
-        user ? <Navigate to="/" replace /> : <Login onSignedIn={setUser} />
-      } />
-      <Route path="/" element={
-        user ? <Dashboard user={user} onSignOut={() => { setToken(null); setUser(null); }} />
-             : <Navigate to="/login" replace />
-      } />
-      <Route path="/console/:sessionId" element={
-        user ? <ConsoleWrapper /> : <Navigate to="/login" replace />
-      } />
-      <Route path="/admin" element={user?.role === "admin" ? <Admin /> : <Navigate to="/" replace />} />
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <Suspense fallback={<PageLoading />}>
+      <Routes>
+        <Route path="/login" element={
+          user ? <Navigate to="/" replace /> : <Login onSignedIn={setUser} />
+        } />
+        <Route path="/" element={
+          user ? <Dashboard user={user} onSignOut={() => { setToken(null); setUser(null); }} />
+               : <Navigate to="/login" replace />
+        } />
+        <Route path="/console/:sessionId" element={
+          user ? <ConsoleWrapper /> : <Navigate to="/login" replace />
+        } />
+        <Route path="/admin" element={user?.role === "admin" ? <Admin /> : <Navigate to="/" replace />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Suspense>
   );
 }
 

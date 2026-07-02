@@ -360,7 +360,7 @@ export function Admin() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="logo">WCTA<span className="accent">RANGE</span></div>
+        <div className="logo">WCTA Range <span className="accent">Admin</span></div>
         <div className="user-strip">
           <Link to="/"><button>Dashboard</button></Link>
         </div>

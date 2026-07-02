@@ -87,7 +87,7 @@ function CredentialsBadge({ session }: { session: SessionView }) {
             onClick={() => setPwVisible((v) => !v)}
             title={pwVisible ? "Hide password" : "Show password"}
           >
-            {pwVisible ? "🙈" : "👁"}
+            {pwVisible ? "Hide" : "Show"}
           </button>
         </span>
       )}

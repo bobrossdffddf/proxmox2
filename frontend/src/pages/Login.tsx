@@ -27,7 +27,11 @@ export function Login({ onSignedIn }: Props) {
   return (
     <div className="login-shell">
       <form className="login-card" onSubmit={submit}>
-        <div className="brand">WCTA<span style={{ color: "var(--cyan)" }}>RANGE</span></div>
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true" />
+          WCTA Range
+        </div>
+        <p className="brand-sub">Sign in to launch a practice environment</p>
 
         <label htmlFor="u">Username</label>
         <input
