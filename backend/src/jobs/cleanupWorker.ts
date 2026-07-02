@@ -24,7 +24,7 @@ import {
   markSessionStopped,
 } from "../services/sessionManager";
 import { releaseVmid } from "../services/vmidPool";
-import { CleanupJobData } from "./queues";
+import { CleanupJobData, cleanupQueue } from "./queues";
 
 function shouldForgetTrackedVm(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
@@ -55,6 +55,18 @@ export function startCleanupWorker(): Worker<CleanupJobData> {
       if (session.status === "stopped") {
         logger.debug({ sessionId, status: session.status }, "cleanup: already finalized");
         return;
+      }
+
+      // The hard-timeout job is scheduled at session creation. If the user
+      // extended the session since, the expiry moved: re-queue for the new
+      // deadline instead of tearing the VM down early.
+      if (reason === "hard_timeout") {
+        const remainingMs = new Date(session.hard_expires_at).getTime() - Date.now();
+        if (remainingMs > 5_000) {
+          logger.info({ sessionId, remainingMs }, "cleanup: session extended, re-queueing hard timeout");
+          await cleanupQueue.add("cleanup", { sessionId, reason: "hard_timeout" }, { delay: remainingMs });
+          return;
+        }
       }
 
       const { proxmox_node: node, proxmox_vmid: vmId, snapshot_name: snapshot } = session;

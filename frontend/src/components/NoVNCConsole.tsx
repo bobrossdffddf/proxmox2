@@ -6,6 +6,8 @@ interface NoVNCConsoleProps {
   sessionPublicId: string;
   scalingMode: "scale" | "viewport" | "native";
   performanceMode: "speed" | "balanced" | "quality";
+  /** Spectator mode: render the framebuffer but send no input. */
+  viewOnly?: boolean;
 }
 
 export interface ConsoleKeyHandle {
@@ -24,7 +26,7 @@ interface VncHandle {
 }
 
 export const NoVNCConsole = forwardRef<ConsoleKeyHandle, NoVNCConsoleProps>(function NoVNCConsole(
-  { sessionPublicId, scalingMode, performanceMode },
+  { sessionPublicId, scalingMode, performanceMode, viewOnly = false },
   ref
 ) {
   const [status, setStatus] = useState("Connecting…");
@@ -100,7 +102,8 @@ export const NoVNCConsole = forwardRef<ConsoleKeyHandle, NoVNCConsoleProps>(func
         clipViewport={scalingMode === "viewport"}
         style={{ width: "100%", height: "100%" }}
         ref={vncRef}
-        resizeSession={scalingMode === "scale"}
+        viewOnly={viewOnly}
+        resizeSession={!viewOnly && scalingMode === "scale"}
         qualityLevel={perf.quality}
         compressionLevel={perf.compression}
         onConnect={() => setStatus("Connected")}

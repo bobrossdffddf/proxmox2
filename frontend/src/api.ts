@@ -157,6 +157,23 @@ export interface TileTemplate {
   color: string | null;
   cpu_cores: number;
   memory_mb: number;
+  ready_count: number;
+}
+
+export interface AdminStats {
+  perDay: Array<{ day: string; count: number }>;
+  perTemplate: Array<{ templateId: string; templateName: string; count: number; users: number }>;
+  perUser: Array<{ username: string; count: number; minutes: number }>;
+  totals: { total: number; last7: number; avgMinutes: number | null };
+}
+
+export interface SessionNote {
+  id: number;
+  username: string;
+  template_name: string;
+  created_at: string;
+  cleaned_up_at: string | null;
+  notes: string;
 }
 
 export type SessionStatus =
@@ -175,6 +192,9 @@ export interface SessionView {
   hardExpiresAt: string;
   guestUsername: string | null;
   guestPassword: string | null;
+  extendedMinutes: number;
+  notes: string | null;
+  isOwner?: boolean;
 }
 
 export const api = {
@@ -201,6 +221,18 @@ export const api = {
     }),
   stopSession: (publicId: string) =>
     request<{ ok: true }>(`/api/vm/sessions/${publicId}`, { method: "DELETE" }),
+  extendSession: (publicId: string) =>
+    request<SessionView>(`/api/vm/sessions/${publicId}/extend`, { method: "POST" }),
+  saveSessionNotes: (publicId: string, notes: string) =>
+    request<{ ok: true }>(`/api/vm/sessions/${publicId}/notes`, {
+      method: "POST",
+      body: JSON.stringify({ notes }),
+    }),
+  pushFileToVm: (publicId: string, name: string, contentBase64: string) =>
+    request<{ ok: true; guestPath: string }>(`/api/vm/sessions/${publicId}/files`, {
+      method: "POST",
+      body: JSON.stringify({ name, contentBase64 }),
+    }),
   announcements: () => request<Announcement[]>("/api/announcements"),
 
   adminUsers: () => request<AdminUser[]>("/api/admin/users"),
@@ -247,10 +279,6 @@ export const api = {
     request<Announcement>("/api/admin/announcements", { method: "POST", body: JSON.stringify(payload) }),
   deactivateAnnouncement: (id: number) =>
     request<{ ok: true }>(`/api/admin/announcements/${id}/deactivate`, { method: "POST" }),
-
-  rdpToken: (sessionId: string) =>
-    request<{ token: string; sessionPublicId: string }>("/api/rdp/connect", {
-      method: "POST",
-      body: JSON.stringify({ sessionId }),
-    }),
+  adminStats: () => request<AdminStats>("/api/admin/stats"),
+  adminNotes: () => request<SessionNote[]>("/api/admin/notes"),
 };

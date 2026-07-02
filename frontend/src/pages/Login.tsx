@@ -1,5 +1,6 @@
 import { FormEvent, useState } from "react";
 import { api, AuthUser, setToken } from "../api";
+import { Wordmark } from "../components/Brand";
 
 interface Props { onSignedIn: (u: AuthUser) => void }
 
@@ -26,37 +27,60 @@ export function Login({ onSignedIn }: Props) {
 
   return (
     <div className="login-shell">
-      <form className="login-card" onSubmit={submit}>
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true" />
-          WCTA Range
+      <div className="login-brand">
+        <div className="top">
+          <Wordmark tag="Cyber Lab" />
         </div>
-        <p className="brand-sub">Sign in to launch a practice environment</p>
 
-        <label htmlFor="u">Username</label>
-        <input
-          id="u"
-          autoFocus
-          autoComplete="username"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-        />
+        <div>
+          <h1 className="headline">
+            The practice range is <em>hot</em>.
+          </h1>
+          <p className="sub">
+            Full Windows and Linux desktops, streamed to your browser. Every
+            launch is a clean image — break it, harden it, throw it away.
+          </p>
+        </div>
 
-        <label htmlFor="p">Password</label>
-        <input
-          id="p"
-          type="password"
-          autoComplete="current-password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
+        <div className="foot">
+          <ul className="login-facts">
+            <li>No install — runs on an HTML5 canvas</li>
+            <li>Fresh VM per session, wiped on exit</li>
+            <li>WCTA CyberPatriot practice infrastructure</li>
+          </ul>
+        </div>
+      </div>
 
-        <button className="primary submit" type="submit" disabled={submitting || !username || !password}>
-          {submitting ? "Signing in..." : "Sign in"}
-        </button>
+      <div className="login-form-col">
+        <form className="login-card" onSubmit={submit}>
+          <span className="k">Operator sign-in</span>
+          <h2>Access the range</h2>
 
-        {error && <div className="error">{error}</div>}
-      </form>
+          <label htmlFor="u">Username</label>
+          <input
+            id="u"
+            autoFocus
+            autoComplete="username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+          />
+
+          <label htmlFor="p">Password</label>
+          <input
+            id="p"
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+
+          <button className="primary submit" type="submit" disabled={submitting || !username || !password}>
+            {submitting ? "Signing in…" : "Sign in"}
+          </button>
+
+          {error && <div className="error">{error}</div>}
+        </form>
+      </div>
     </div>
   );
 }

@@ -38,6 +38,7 @@ const envSchema = z.object({
   MAX_VMS_PER_USER: z.coerce.number().default(2),
   MAX_CLUSTER_VMS: z.coerce.number().default(60),
   SESSION_HARD_TIMEOUT_MINUTES: z.coerce.number().default(240),
+  SESSION_EXTEND_MINUTES: z.coerce.number().default(60),
   SESSION_INACTIVITY_TIMEOUT_MINUTES: z.coerce.number().default(30),
   HEARTBEAT_INTERVAL_SECONDS: z.coerce.number().default(10),
 

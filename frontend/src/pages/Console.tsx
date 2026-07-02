@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { ChangeEvent, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api, SessionView } from "../api";
+import { formatRemaining } from "../components/Brand";
 import { ConsoleKeyHandle, NoVNCConsole } from "../components/NoVNCConsole";
 
 interface Props { onExit: () => void }
@@ -8,6 +9,8 @@ interface Props { onExit: () => void }
 // Typical provisioning takes ~90 seconds — we use this as our ETA baseline.
 const PROVISION_ETA_SECONDS = 90;
 const CLIPBOARD_HISTORY_KEY = "wcta.console.clipboardHistory";
+// The QEMU guest agent caps file-write payloads; stay under it after base64.
+const MAX_FILE_BYTES = 44 * 1024;
 
 type ScalingMode = "scale" | "viewport" | "native";
 type PerformanceMode = "speed" | "balanced" | "quality";
@@ -40,25 +43,23 @@ function StartupProgress({ session }: { session: SessionView }) {
 
   const pct = Math.min(100, Math.round((elapsed / PROVISION_ETA_SECONDS) * 100));
   const remaining = Math.max(0, PROVISION_ETA_SECONDS - elapsed);
-  const etaLabel = remaining > 0
-    ? `~${remaining}s remaining`
-    : "Almost ready…";
+  const etaLabel = remaining > 0 ? `~${remaining}s remaining` : "Almost ready…";
 
   const stageLabel =
-    session.status === "queued"       ? "Queued — waiting for a slot…"
-    : session.status === "provisioning" ? "Provisioning VM — cloning & booting…"
+    session.status === "queued"        ? "Queued — waiting for a slot"
+    : session.status === "provisioning" ? "Provisioning — cloning & booting"
     : session.status;
 
   return (
     <div className="startup-overlay">
       <div className="startup-card">
-        <div className="startup-spinner" />
+        <span className="k">Preparing environment</span>
         <div className="startup-title">{session.templateName}</div>
         <div className="startup-stage">{stageLabel}</div>
         <div className="startup-bar-track">
           <div className="startup-bar-fill" style={{ width: `${pct}%` }} />
         </div>
-        <div className="startup-eta">{etaLabel} &nbsp;·&nbsp; {pct}%</div>
+        <div className="startup-eta"><span>{etaLabel}</span><span>{pct}%</span></div>
       </div>
     </div>
   );
@@ -95,17 +96,85 @@ function CredentialsBadge({ session }: { session: SessionView }) {
   );
 }
 
+function TimeLeft({ session, onExtend, canExtend }: {
+  session: SessionView;
+  onExtend: () => void;
+  canExtend: boolean;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const msLeft = new Date(session.hardExpiresAt).getTime() - now;
+  const minutes = msLeft / 60000;
+  const cls = minutes < 5 ? "critical" : minutes < 15 ? "low" : "";
+  return (
+    <>
+      <span className={`time-left ${cls}`} title={`Session ends ${new Date(session.hardExpiresAt).toLocaleString()}`}>
+        T−{formatRemaining(msLeft)}
+      </span>
+      {canExtend && (
+        <button onClick={onExtend} title="Add time to this session (once per session)">
+          Extend
+        </button>
+      )}
+    </>
+  );
+}
+
+function StopModal({ templateName, busy, onCancel, onConfirm }: {
+  templateName: string;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: (notes: string) => void;
+}) {
+  const [notes, setNotes] = useState("");
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <span className="k">End session</span>
+        <h3>Stop {templateName}?</h3>
+        <p>
+          The VM is deleted and unsaved work is lost. Before you go, jot down
+          what you found or fixed — your coach can read it later.
+        </p>
+        <textarea
+          autoFocus
+          placeholder="Debrief notes (optional) — findings, fixes, where you got stuck…"
+          value={notes}
+          maxLength={4000}
+          onChange={(e) => setNotes(e.target.value)}
+        />
+        <div className="modal-actions">
+          <button onClick={onCancel} disabled={busy}>Keep working</button>
+          <button className="danger" onClick={() => onConfirm(notes)} disabled={busy}>
+            {busy ? "Stopping…" : "Stop VM"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Console({ onExit }: Props) {
   const { sessionId } = useParams<{ sessionId: string }>();
   const shellRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [session, setSession] = useState<SessionView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
   const [clipboardText, setClipboardText] = useState("");
   const [remoteClipboard, setRemoteClipboard] = useState("");
   const [clipboardHistory, setClipboardHistory] = useState<string[]>(() => loadClipboardHistory());
   const [scalingMode, setScalingMode] = useState<ScalingMode>("viewport");
   const [performanceMode, setPerformanceMode] = useState<PerformanceMode>("speed");
+  const [stopModalOpen, setStopModalOpen] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const consoleRef = useRef<ConsoleKeyHandle | null>(null);
+
+  // The backend tells us whether we own this session; admins spectate.
+  const spectating = session ? session.isOwner === false : false;
 
   // Poll until running
   useEffect(() => {
@@ -141,18 +210,18 @@ export function Console({ onExit }: Props) {
   }, []);
 
   useEffect(() => {
-    if (!sessionId || session?.status !== "running") return;
+    if (!sessionId || session?.status !== "running" || spectating) return;
     const interval = setInterval(() => {
       api.heartbeat(sessionId).catch(() => undefined);
     }, 10_000);
     return () => clearInterval(interval);
-  }, [sessionId, session?.status]);
+  }, [sessionId, session?.status, spectating]);
 
-  async function stop() {
-    if (!sessionId) return;
-    if (!confirm("Stop this VM? Unsaved work will be lost.")) return;
-    try { await api.stopSession(sessionId); } finally { onExit(); }
-  }
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 5000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   if (!sessionId) return null;
 
@@ -199,6 +268,50 @@ export function Console({ onExit }: Props) {
     }
   };
 
+  const extend = async () => {
+    try {
+      const updated = await api.extendSession(sessionId);
+      setSession(updated);
+      setToast({ kind: "ok", msg: "Session extended." });
+    } catch (err) {
+      setToast({ kind: "error", msg: err instanceof Error ? err.message : "Could not extend" });
+    }
+  };
+
+  const confirmStop = async (notes: string) => {
+    setStopping(true);
+    try {
+      if (notes.trim()) {
+        await api.saveSessionNotes(sessionId, notes.trim()).catch(() => undefined);
+      }
+      await api.stopSession(sessionId);
+    } finally {
+      setStopping(false);
+      onExit();
+    }
+  };
+
+  const onFilePicked = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (file.size > MAX_FILE_BYTES) {
+      setToast({ kind: "error", msg: `File too large — the guest agent accepts up to ${Math.floor(MAX_FILE_BYTES / 1024)} KB.` });
+      return;
+    }
+    try {
+      const buf = await file.arrayBuffer();
+      let binary = "";
+      const bytes = new Uint8Array(buf);
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      const b64 = btoa(binary);
+      const res = await api.pushFileToVm(sessionId, file.name, b64);
+      setToast({ kind: "ok", msg: `Sent — file landed at ${res.guestPath}` });
+    } catch (err) {
+      setToast({ kind: "error", msg: err instanceof Error ? err.message : "File push failed" });
+    }
+  };
+
   return (
     <div className="console-shell" ref={shellRef}>
       <div className="console-bar">
@@ -208,11 +321,18 @@ export function Console({ onExit }: Props) {
           {session && (
             <span className={`status-pill ${session.status}`}>{session.status}</span>
           )}
+          {session?.status === "running" && !spectating && (
+            <TimeLeft
+              session={session}
+              onExtend={extend}
+              canExtend={session.extendedMinutes === 0}
+            />
+          )}
         </div>
         <div className="console-actions">
-          {session?.status === "running" && (
+          {session?.status === "running" && !spectating && (
             <div className="console-key-actions" aria-label="Console key shortcuts">
-              <span>Keyboard</span>
+              <span>Keys</span>
               <button title="Send Ctrl+Alt+Delete" onClick={() => consoleRef.current?.sendCtrlAltDel()}>Ctrl Alt Del</button>
               <button title="Press Windows key" onClick={() => consoleRef.current?.sendKey(0xffeb, "MetaLeft")}>Win</button>
               <button title="Send Alt+Tab" onClick={() => sendCombo([{ keysym: 0xffe9, code: "AltLeft" }, { keysym: 0xff09, code: "Tab" }])}>Alt Tab</button>
@@ -234,17 +354,30 @@ export function Console({ onExit }: Props) {
                 <option value="balanced">Balanced</option>
                 <option value="quality">Quality</option>
               </select>
+              {!spectating && (
+                <button title={`Drop a small file (max ${Math.floor(MAX_FILE_BYTES / 1024)} KB) onto the VM desktop`} onClick={() => fileInputRef.current?.click()}>
+                  Send File
+                </button>
+              )}
               <button title="Download screenshot" onClick={downloadScreenshot}>Screenshot</button>
               <button title="Toggle fullscreen" onClick={toggleFullscreen}>Fullscreen</button>
             </div>
           )}
-          <button className="danger" onClick={stop}>Stop VM</button>
+          {!spectating && (
+            <button className="danger" onClick={() => setStopModalOpen(true)}>Stop VM</button>
+          )}
         </div>
       </div>
 
-      {session && <CredentialsBadge session={session} />}
+      {spectating && session && (
+        <div className="spectate-banner">
+          Spectating — read-only view. Input is disabled.
+        </div>
+      )}
 
-      {session?.status === "running" && (
+      {session && !spectating && <CredentialsBadge session={session} />}
+
+      {session?.status === "running" && !spectating && (
         <div className="clipboard-bar">
           <span className="cred-label">Clipboard</span>
           <input
@@ -254,11 +387,12 @@ export function Console({ onExit }: Props) {
           />
           <button onClick={pasteText}>Paste to VM</button>
           <button onClick={async () => setClipboardText(await navigator.clipboard?.readText().catch(() => "") ?? "")}>
-            Use Local Clipboard
+            Use Local
           </button>
           <button disabled={!remoteClipboard} onClick={copyRemote}>
             Copy From VM
           </button>
+          <span />
           <select
             value=""
             aria-label="Clipboard history"
@@ -285,6 +419,7 @@ export function Console({ onExit }: Props) {
           sessionPublicId={sessionId}
           scalingMode={scalingMode}
           performanceMode={performanceMode}
+          viewOnly={spectating}
         />
       )}
 
@@ -293,6 +428,24 @@ export function Console({ onExit }: Props) {
           Session is {session.status}. {session.failureReason ?? ""}
         </div>
       )}
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        style={{ display: "none" }}
+        onChange={onFilePicked}
+      />
+
+      {stopModalOpen && session && (
+        <StopModal
+          templateName={session.templateName}
+          busy={stopping}
+          onCancel={() => setStopModalOpen(false)}
+          onConfirm={confirmStop}
+        />
+      )}
+
+      {toast && <div className={`toast ${toast.kind}`}>{toast.msg}</div>}
     </div>
   );
 }

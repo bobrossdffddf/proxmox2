@@ -16,12 +16,15 @@ import { AuthedRequest, requireAuth } from "../middleware/auth";
 import { HttpError } from "../middleware/errorHandler";
 import { audit } from "../services/audit";
 import { redis } from "../services/redis";
+import { proxmox } from "../services/proxmox";
 import {
   countActiveSessions,
   createRunningSessionFromStaged,
+  extendSession,
   getSessionByPublicId,
   listActiveSessionsForUser,
   publicView,
+  setSessionNotes,
   touchHeartbeat,
 } from "../services/sessionManager";
 import { claimReadyStagedVm } from "../services/staging";
@@ -140,8 +143,94 @@ router.get("/sessions", async (req, res) => {
 router.get("/sessions/:publicId", async (req, res) => {
   const auth = (req as unknown as AuthedRequest).auth;
   const s = await getSessionByPublicId(req.params.publicId);
+  // Admins may look up any session so they can spectate a student's console.
+  if (!s || (s.user_id !== auth.sub && auth.role !== "admin")) throw new HttpError(404, "not found");
+  res.json({ ...publicView(s), isOwner: s.user_id === auth.sub });
+});
+
+router.post("/sessions/:publicId/extend", async (req, res) => {
+  const auth = (req as unknown as AuthedRequest).auth;
+  const s = await getSessionByPublicId(req.params.publicId);
   if (!s || s.user_id !== auth.sub) throw new HttpError(404, "not found");
-  res.json(publicView(s));
+  if (s.status !== "running") throw new HttpError(409, "Session is not running");
+  if (s.extended_minutes > 0) throw new HttpError(409, "Session was already extended once");
+
+  const updated = await extendSession(s.id, env.SESSION_EXTEND_MINUTES);
+  if (!updated) throw new HttpError(409, "Session could not be extended");
+
+  await audit({
+    userId: auth.sub,
+    username: auth.username,
+    action: "vm.extended",
+    sessionId: s.id,
+    ipAddress: req.ip,
+    details: { minutes: env.SESSION_EXTEND_MINUTES },
+  });
+  res.json(publicView(updated));
+});
+
+const notesSchema = z.object({ notes: z.string().max(4000) });
+
+router.post("/sessions/:publicId/notes", async (req, res) => {
+  const parse = notesSchema.safeParse(req.body);
+  if (!parse.success) throw new HttpError(400, "notes must be a string (max 4000 chars)");
+
+  const auth = (req as unknown as AuthedRequest).auth;
+  const s = await getSessionByPublicId(req.params.publicId);
+  if (!s || s.user_id !== auth.sub) throw new HttpError(404, "not found");
+
+  await setSessionNotes(s.id, parse.data.notes);
+  await audit({
+    userId: auth.sub,
+    username: auth.username,
+    action: "vm.notes_saved",
+    sessionId: s.id,
+    ipAddress: req.ip,
+    details: { length: parse.data.notes.length },
+  });
+  res.json({ ok: true });
+});
+
+// The QEMU agent caps file-write payloads at 60 KiB of (base64) content.
+const MAX_FILE_B64_CHARS = 61440;
+
+const fileSchema = z.object({
+  name: z.string().min(1).max(128).regex(/^[\w][\w .()-]*$/, "invalid file name"),
+  contentBase64: z.string().min(1).max(MAX_FILE_B64_CHARS, "File too large — the guest agent accepts ~45 KB max"),
+});
+
+router.post("/sessions/:publicId/files", async (req, res) => {
+  const parse = fileSchema.safeParse(req.body);
+  if (!parse.success) {
+    const msg = parse.error.issues[0]?.message ?? "invalid file payload";
+    throw new HttpError(400, msg);
+  }
+
+  const auth = (req as unknown as AuthedRequest).auth;
+  const s = await getSessionByPublicId(req.params.publicId);
+  if (!s || s.user_id !== auth.sub) throw new HttpError(404, "not found");
+  if (s.status !== "running") throw new HttpError(409, "Session is not running");
+
+  const { name, contentBase64 } = parse.data;
+  const guestPath = s.protocol === "rdp"
+    ? `C:\\Users\\Public\\Desktop\\${name}`
+    : `/tmp/${name}`;
+
+  try {
+    await proxmox.agentFileWrite(s.proxmox_node, s.proxmox_vmid, guestPath, contentBase64);
+  } catch (err) {
+    throw new HttpError(502, `Guest agent rejected the file: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  await audit({
+    userId: auth.sub,
+    username: auth.username,
+    action: "vm.file_pushed",
+    sessionId: s.id,
+    ipAddress: req.ip,
+    details: { name, guestPath, bytes: Math.floor(contentBase64.length * 0.75) },
+  });
+  res.json({ ok: true, guestPath });
 });
 
 router.post("/sessions/:publicId/heartbeat", async (req, res) => {

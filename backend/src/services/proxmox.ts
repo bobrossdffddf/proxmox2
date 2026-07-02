@@ -382,6 +382,23 @@ export class ProxmoxClusterClient {
     throw new Error(`Timed out waiting for guest IP on VM ${vmId} (${node})`);
   }
   /**
+   * Write a file into the guest via the QEMU agent. Content must already be
+   * base64-encoded; the agent enforces a ~60 KiB payload cap, so this is for
+   * README/config-sized drops, not ISO uploads.
+   */
+  async agentFileWrite(node: string, vmId: number, filePath: string, contentBase64: string): Promise<void> {
+    const params = new URLSearchParams();
+    params.append("file", filePath);
+    params.append("content", contentBase64);
+    params.append("encode", "0"); // content is pre-encoded
+    await this.clientFor(node).post(
+      `/nodes/${node}/qemu/${vmId}/agent/file-write`,
+      params.toString(),
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+    );
+  }
+
+  /**
    * Create a VNC proxy for a VM. Returns the ticket and port needed to
    * connect to the Proxmox VNC websocket.
    */

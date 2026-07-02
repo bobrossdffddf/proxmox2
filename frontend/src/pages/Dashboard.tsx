@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Announcement, api, AuthUser, SessionView, TileTemplate } from "../api";
+import { formatRemaining, TopClock, Wordmark } from "../components/Brand";
 import { VMTile } from "../components/VMTile";
 
 interface Props { user: AuthUser; onSignOut: () => void }
@@ -22,7 +23,7 @@ function SessionProgress({ session }: { session: SessionView }) {
   const pct = Math.min(97, Math.round((elapsed / PROVISION_ETA_SECONDS) * 100));
   const remaining = Math.max(0, PROVISION_ETA_SECONDS - elapsed);
   const etaLabel = remaining > 0 ? `~${remaining}s` : "Almost ready…";
-  const stageLabel = session.status === "queued" ? "Queued" : "Provisioning…";
+  const stageLabel = session.status === "queued" ? "Queued" : "Provisioning";
 
   return (
     <div className="session-progress">
@@ -43,6 +44,7 @@ export function Dashboard({ user, onSignOut }: Props) {
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const navigate = useNavigate();
 
   // Track which sessions were previously not-running so we can auto-navigate
@@ -56,16 +58,11 @@ export function Dashboard({ user, onSignOut }: Props) {
       // Auto-navigate to console if a session just became "running"
       for (const session of s) {
         const prev = prevSessionsRef.current.get(session.id);
-        if (
-          prev &&
-          prev !== "running" &&
-          session.status === "running"
-        ) {
+        if (prev && prev !== "running" && session.status === "running") {
           navigate(`/console/${session.id}`);
           return;
         }
       }
-      // Update ref
       const next = new Map<string, string>();
       for (const session of s) next.set(session.id, session.status);
       prevSessionsRef.current = next;
@@ -74,25 +71,41 @@ export function Dashboard({ user, onSignOut }: Props) {
     }
   }, [navigate]);
 
-  useEffect(() => {
+  const loadTemplates = useCallback(() => {
     api.templates().then(setTemplates).catch((err) =>
       setToast({ kind: "error", msg: err.message ?? "Failed to load templates" })
     );
+  }, []);
+
+  useEffect(() => {
+    loadTemplates();
     api.announcements().then(setAnnouncements).catch(() => undefined);
     refresh();
     // Only poll while the tab is visible; catch up immediately on return.
     const i = setInterval(() => {
       if (!document.hidden) refresh();
     }, 3000);
+    // Availability changes as staged VMs are claimed/refilled — refresh slower.
+    const t = setInterval(() => {
+      if (!document.hidden) loadTemplates();
+    }, 15000);
     const onVisible = () => {
-      if (!document.hidden) refresh();
+      if (!document.hidden) { refresh(); loadTemplates(); }
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       clearInterval(i);
+      clearInterval(t);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [refresh]);
+  }, [refresh, loadTemplates]);
+
+  // Tick the expiry countdowns while sessions are visible
+  useEffect(() => {
+    if (sessions.length === 0) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [sessions.length > 0]);
 
   useEffect(() => {
     if (!toast) return;
@@ -128,22 +141,30 @@ export function Dashboard({ user, onSignOut }: Props) {
   const isStarting = (s: SessionView) =>
     s.status === "queued" || s.status === "provisioning";
 
+  const readyTotal = templates.reduce((sum, t) => sum + t.ready_count, 0);
+  const running = sessions.filter((s) => s.status === "running").length;
+
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="logo">WCTA Range</div>
+        <Wordmark />
+        <TopClock />
         <div className="user-strip">
-          <span><strong>{user.username}</strong> · {user.role}</span>
+          <span className="who"><strong>{user.username}</strong> / {user.role}</span>
           {user.role === "admin" && <Link to="/admin"><button>Admin</button></Link>}
-          <button onClick={onSignOut}>Sign out</button>
+          <button className="ghost" onClick={onSignOut}>Sign out</button>
         </div>
       </header>
 
       <main className="content">
-        <h1>Practice images</h1>
-        <p className="subtitle">
-          Click a tile to open a ready sandbox. Each VM is deleted on exit, so every launch is fresh.
-        </p>
+        <div className="page-head">
+          <div>
+            <h1>Practice images</h1>
+            <p className="subtitle">
+              Pick an image to open a disposable sandbox. Every VM is wiped when the session ends.
+            </p>
+          </div>
+        </div>
 
         {announcements.length > 0 && (
           <div className="announcement-stack">
@@ -156,53 +177,82 @@ export function Dashboard({ user, onSignOut }: Props) {
           </div>
         )}
 
+        <div className="readout-strip">
+          <div className="readout">
+            <span className="k">Images</span>
+            <div className="val">{templates.length}</div>
+          </div>
+          <div className="readout">
+            <span className="k">Warm &amp; ready</span>
+            <div className={`val ${readyTotal > 0 ? "good" : ""}`}>{readyTotal}</div>
+          </div>
+          <div className="readout">
+            <span className="k">Your active VMs</span>
+            <div className={`val ${running > 0 ? "signal" : ""}`}>{sessions.length}</div>
+          </div>
+        </div>
+
+        <div className="section-head">
+          <span className="idx">01</span>
+          <h2>Launch an image</h2>
+          <span className="aux">{templates.length} configured</span>
+        </div>
+
         {templates.length === 0 ? (
           <div className="empty">
-            No practice images configured. Ask an admin to edit <code>config/templates.yaml</code>.
+            No practice images configured. Ask an admin to edit config/templates.yaml.
           </div>
         ) : (
           <div className="tile-grid">
-            {templates.map((t) => (
-              <VMTile key={t.id} tpl={t} busy={busy === t.id} onLaunch={launch} />
+            {templates.map((t, i) => (
+              <VMTile key={t.id} tpl={t} ordinal={i + 1} busy={busy === t.id} onLaunch={launch} />
             ))}
           </div>
         )}
 
-        <h2>Your active sessions</h2>
+        <div className="section-head">
+          <span className="idx">02</span>
+          <h2>Your sessions</h2>
+          <span className="aux">{sessions.length} active</span>
+        </div>
+
         {sessions.length === 0 ? (
           <div className="empty">No active sessions.</div>
         ) : (
           <div className="session-strip">
-            {sessions.map((s) => (
-              <div key={s.id} className="session-row">
-                <div>
-                  <div className="name">{s.templateName}</div>
-                  <div className="meta">
-                    started {new Date(s.createdAt).toLocaleTimeString()} on {s.proxmoxNode}
+            {sessions.map((s) => {
+              const msLeft = new Date(s.hardExpiresAt).getTime() - now;
+              return (
+                <div key={s.id} className="session-row">
+                  <div>
+                    <div className="name">{s.templateName}</div>
+                    <div className="meta">
+                      started {new Date(s.createdAt).toLocaleTimeString()} on {s.proxmoxNode}
+                    </div>
+                    {isStarting(s) && <SessionProgress session={s} />}
                   </div>
-                  {isStarting(s) && <SessionProgress session={s} />}
+                  <div><span className={`status-pill ${s.status}`}>{s.status}</span></div>
+                  <div className="mono-cell">{s.protocol}</div>
+                  <div className="mono-cell" title={`Hard expiry ${new Date(s.hardExpiresAt).toLocaleString()}`}>
+                    {s.status === "running" ? `${formatRemaining(msLeft)} left` : ""}
+                  </div>
+                  <div className="actions">
+                    {s.status === "running" ? (
+                      <Link to={`/console/${s.id}`}>
+                        <button className="primary">Open</button>
+                      </Link>
+                    ) : isStarting(s) ? (
+                      <Link to={`/console/${s.id}`}>
+                        <button className="primary">Watch</button>
+                      </Link>
+                    ) : (
+                      <button disabled>Open</button>
+                    )}
+                    <button className="danger" onClick={() => stop(s.id)}>Stop</button>
+                  </div>
                 </div>
-                <div><span className={`status-pill ${s.status}`}>{s.status}</span></div>
-                <div className="meta">{s.protocol.toUpperCase()}</div>
-                <div className="meta">
-                  expires {new Date(s.hardExpiresAt).toLocaleTimeString()}
-                </div>
-                <div className="actions">
-                  {s.status === "running" ? (
-                    <Link to={`/console/${s.id}`}>
-                      <button className="primary">Open</button>
-                    </Link>
-                  ) : isStarting(s) ? (
-                    <Link to={`/console/${s.id}`}>
-                      <button className="primary">Watch</button>
-                    </Link>
-                  ) : (
-                    <button disabled>Open</button>
-                  )}
-                  <button className="danger" onClick={() => stop(s.id)}>Stop</button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </main>

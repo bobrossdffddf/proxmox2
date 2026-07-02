@@ -38,6 +38,8 @@ export interface SessionRow {
   last_activity_at: Date;
   hard_expires_at: Date;
   cleaned_up_at: Date | null;
+  extended_minutes: number;
+  notes: string | null;
 }
 
 export async function createPendingSession(opts: {
@@ -150,6 +152,25 @@ export async function touchHeartbeat(id: number): Promise<void> {
   await query(`UPDATE sessions SET last_activity_at=NOW() WHERE id=$1`, [id]);
 }
 
+/**
+ * One-time extension of the hard expiry. Returns the updated row, or null if
+ * the session isn't running or was already extended.
+ */
+export async function extendSession(id: number, minutes: number): Promise<SessionRow | null> {
+  return one<SessionRow>(
+    `UPDATE sessions
+     SET hard_expires_at = hard_expires_at + ($2 || ' minutes')::interval,
+         extended_minutes = extended_minutes + $2
+     WHERE id=$1 AND status='running' AND extended_minutes = 0
+     RETURNING *`,
+    [id, String(minutes)]
+  );
+}
+
+export async function setSessionNotes(id: number, notes: string): Promise<void> {
+  await query(`UPDATE sessions SET notes=$2 WHERE id=$1`, [id, notes]);
+}
+
 export async function getSessionById(id: number): Promise<SessionRow | null> {
   return one<SessionRow>(`SELECT * FROM sessions WHERE id=$1`, [id]);
 }
@@ -207,6 +228,8 @@ export function publicView(s: SessionRow) {
     hardExpiresAt: s.hard_expires_at,
     guestUsername: s.guest_username,
     guestPassword: s.guest_password,
+    extendedMinutes: s.extended_minutes ?? 0,
+    notes: s.notes,
   };
 }
 

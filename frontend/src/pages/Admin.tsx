@@ -1,8 +1,79 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { AdminSession, AdminUser, Announcement, api, AuditLog, ResourceReport, StagedVm, StagingTarget } from "../api";
+import { AdminSession, AdminStats, AdminUser, Announcement, api, AuditLog, ResourceReport, SessionNote, StagedVm, StagingTarget } from "../api";
+import { TopClock, Wordmark } from "../components/Brand";
 
-type Tab = "overview" | "users" | "sessions" | "resources" | "staging" | "import" | "announcements" | "logs";
+type Tab = "overview" | "users" | "sessions" | "resources" | "staging" | "import" | "announcements" | "notes" | "logs";
+
+/**
+ * Launches per day, last 30 days. Single-series column chart: one hue,
+ * recessive grid, native tooltips per bar.
+ */
+function DayBarChart({ data }: { data: AdminStats["perDay"] }) {
+  const days: Array<{ day: string; count: number }> = [];
+  const byDay = new Map(data.map((d) => [d.day, d.count]));
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    days.push({ day: key, count: byDay.get(key) ?? 0 });
+  }
+  const max = Math.max(1, ...days.map((d) => d.count));
+
+  const W = 600, H = 130, PAD_TOP = 14, PAD_BOTTOM = 18;
+  const plotH = H - PAD_TOP - PAD_BOTTOM;
+  const slot = W / days.length;
+  const barW = Math.max(4, slot - 2);
+
+  const fmt = (key: string) => {
+    const [, m, d] = key.split("-");
+    return `${Number(m)}/${Number(d)}`;
+  };
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="VM launches per day, last 30 days">
+      <line className="chart-grid-line" x1="0" y1={PAD_TOP} x2={W} y2={PAD_TOP} />
+      <line className="chart-grid-line" x1="0" y1={H - PAD_BOTTOM} x2={W} y2={H - PAD_BOTTOM} />
+      <text className="chart-axis-label" x="0" y={PAD_TOP - 4}>{max}</text>
+      {days.map((d, i) => {
+        const h = d.count === 0 ? 0 : Math.max(2, (d.count / max) * plotH);
+        return (
+          <rect
+            key={d.day}
+            className="bar"
+            x={i * slot + 1}
+            y={H - PAD_BOTTOM - h}
+            width={barW}
+            height={h}
+            rx="1.5"
+          >
+            <title>{`${fmt(d.day)} — ${d.count} launch${d.count === 1 ? "" : "es"}`}</title>
+          </rect>
+        );
+      })}
+      <text className="chart-axis-label" x="0" y={H - 5}>{fmt(days[0].day)}</text>
+      <text className="chart-axis-label" x={W} y={H - 5} textAnchor="end">{fmt(days[days.length - 1].day)}</text>
+    </svg>
+  );
+}
+
+/** Ranked horizontal bar list — doubles as the table view of the data. */
+function BarList({ rows }: { rows: Array<{ label: string; value: number; detail?: string }> }) {
+  const max = Math.max(1, ...rows.map((r) => r.value));
+  return (
+    <div className="bar-list">
+      {rows.map((r) => (
+        <div key={r.label} className="bar-list-row" title={r.detail ?? `${r.label}: ${r.value}`}>
+          <span className="label">{r.label}</span>
+          <span className="track">
+            <span className="fill" style={{ width: `${(r.value / max) * 100}%` }} />
+          </span>
+          <span className="value">{r.value}{r.detail ? ` · ${r.detail}` : ""}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function ImportWizard() {
   const [form, setForm] = useState({
@@ -93,6 +164,8 @@ export function Admin() {
   const [stagingTargets, setStagingTargets] = useState<StagingTarget[]>([]);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [resources, setResources] = useState<ResourceReport | null>(null);
+  const [stats, setStats] = useState<AdminStats | null>(null);
+  const [notes, setNotes] = useState<SessionNote[]>([]);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [form, setForm] = useState({
     username: "",
@@ -138,6 +211,14 @@ export function Admin() {
     setResources(await api.adminResources());
   };
 
+  const loadStats = async () => {
+    setStats(await api.adminStats());
+  };
+
+  const loadNotes = async () => {
+    setNotes(await api.adminNotes());
+  };
+
   useEffect(() => {
     loadUsers().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load users" }));
     loadSessions().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load sessions" }));
@@ -145,6 +226,8 @@ export function Admin() {
     loadStagingTargets().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load staging targets" }));
     loadAnnouncements().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load announcements" }));
     loadResources().catch((err) => setMessage({ kind: "error", text: err.message ?? "Failed to load resources" }));
+    loadStats().catch(() => undefined);
+    loadNotes().catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -360,7 +443,8 @@ export function Admin() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="logo">WCTA Range <span className="accent">Admin</span></div>
+        <Wordmark tag="Admin" />
+        <TopClock />
         <div className="user-strip">
           <Link to="/"><button>Dashboard</button></Link>
         </div>
@@ -369,8 +453,8 @@ export function Admin() {
       <main className="content">
         <div className="admin-head">
           <div>
-            <h1>Admin</h1>
-            <p className="subtitle">Manage users, active VMs, staging inventory, announcements, and logs.</p>
+            <h1>Range control</h1>
+            <p className="subtitle">Users, active VMs, staging inventory, usage, announcements, and logs.</p>
           </div>
           <div className="admin-tabs">
             <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>Overview</button>
@@ -379,13 +463,18 @@ export function Admin() {
             <button className={tab === "resources" ? "active" : ""} onClick={() => setTab("resources")}>Resources</button>
             <button className={tab === "staging" ? "active" : ""} onClick={() => setTab("staging")}>Staging</button>
             <button className={tab === "import" ? "active" : ""} onClick={() => setTab("import")}>Import</button>
-            <button className={tab === "announcements" ? "active" : ""} onClick={() => setTab("announcements")}>Announcements</button>
+            <button className={tab === "announcements" ? "active" : ""} onClick={() => setTab("announcements")}>Announce</button>
+            <button className={tab === "notes" ? "active" : ""} onClick={() => setTab("notes")}>Notes</button>
             <button className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")}>Logs</button>
           </div>
         </div>
 
         {tab === "overview" ? (
           <>
+            <div className="section-head">
+              <span className="idx">01</span>
+              <h2>Status</h2>
+            </div>
             <section className="admin-overview-grid">
               <div className="admin-summary-card">
                 <div className="admin-summary-value">{users.length}</div>
@@ -410,16 +499,69 @@ export function Admin() {
             </section>
 
             <section className="admin-panel">
-              <h2>Quick Actions</h2>
+              <div className="section-head">
+                <span className="idx">02</span>
+                <h2>Quick Actions</h2>
+              </div>
               <div className="admin-quick-actions">
                 <button onClick={loadSessions}>Refresh Active VMs</button>
                 <button onClick={() => { void loadResources(); setTab("resources"); }}>Resource Monitor</button>
                 <button className="danger" onClick={stopAllSessions}>Stop All Active VMs</button>
                 <button className="danger" onClick={deleteAllVms}>Delete All VMs</button>
-                <button className="danger" onClick={deleteInactiveVms}>Delete Inactive VM's</button>
+                <button className="danger" onClick={deleteInactiveVms}>Delete Inactive VMs</button>
                 <button className="primary" onClick={refillStaging}>Refill Staging</button>
                 <button onClick={() => setTab("announcements")}>Post Announcement</button>
               </div>
+            </section>
+
+            <section className="admin-panel">
+              <div className="section-head">
+                <span className="idx">03</span>
+                <h2>Usage — last 30 days</h2>
+                {stats && (
+                  <span className="aux">
+                    {stats.totals.last7} this week · {stats.totals.total} all time
+                    {stats.totals.avgMinutes !== null ? ` · avg ${stats.totals.avgMinutes} min` : ""}
+                  </span>
+                )}
+              </div>
+              {!stats ? (
+                <div className="empty">Usage data is loading.</div>
+              ) : (
+                <div className="chart-grid">
+                  <div className="chart-card wide">
+                    <div className="chart-title">Launches per day</div>
+                    <div className="chart-sub">Every VM session started, by calendar day</div>
+                    <DayBarChart data={stats.perDay} />
+                  </div>
+                  <div className="chart-card">
+                    <div className="chart-title">Most used images</div>
+                    <div className="chart-sub">Sessions per template · distinct students</div>
+                    {stats.perTemplate.length === 0 ? (
+                      <div className="empty">No sessions yet.</div>
+                    ) : (
+                      <BarList rows={stats.perTemplate.map((t) => ({
+                        label: t.templateName,
+                        value: t.count,
+                        detail: `${t.users} user${t.users === 1 ? "" : "s"}`,
+                      }))} />
+                    )}
+                  </div>
+                  <div className="chart-card">
+                    <div className="chart-title">Most active students</div>
+                    <div className="chart-sub">Sessions per student · total minutes in VMs</div>
+                    {stats.perUser.length === 0 ? (
+                      <div className="empty">No sessions yet.</div>
+                    ) : (
+                      <BarList rows={stats.perUser.map((u) => ({
+                        label: u.username,
+                        value: u.count,
+                        detail: `${u.minutes} min`,
+                      }))} />
+                    )}
+                  </div>
+                </div>
+              )}
             </section>
           </>
         ) : tab === "users" ? (
@@ -489,6 +631,11 @@ export function Admin() {
                       <span className={`status-pill ${session.status}`}>{session.status}</span>
                       <div className="meta">expires {new Date(session.hard_expires_at).toLocaleString()}</div>
                       <div className="row-actions">
+                        {session.status === "running" && (
+                          <Link to={`/console/${session.public_id}`}>
+                            <button title="Spectate this student's console (read-only)">Watch</button>
+                          </Link>
+                        )}
                         <button className="danger" onClick={() => stopSession(session)}>Stop & Delete</button>
                         <button className="icon-danger" title="Remove from view" onClick={() => forgetSession(session)}>X</button>
                       </div>
@@ -690,6 +837,31 @@ export function Admin() {
               )}
             </section>
           </>
+        ) : tab === "notes" ? (
+          <section className="admin-panel">
+            <div className="admin-log-toolbar">
+              <h2>Session Debriefs</h2>
+              <button onClick={() => loadNotes().catch(() => undefined)}>Refresh</button>
+            </div>
+            <p className="subtitle" style={{ marginTop: 8 }}>
+              Notes students left when stopping a VM. The VM is gone — this is what remains.
+            </p>
+            {notes.length === 0 ? (
+              <div className="empty">No debrief notes yet.</div>
+            ) : (
+              <div className="admin-session-list">
+                {notes.map((note) => (
+                  <div key={note.id} className="note-card">
+                    <div className="note-head">
+                      <span className="name">{note.username} · {note.template_name}</span>
+                      <span className="meta">{new Date(note.created_at).toLocaleString()}</span>
+                    </div>
+                    <div className="note-body">{note.notes}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
         ) : (
           <section className="admin-panel">
             <div className="admin-log-toolbar">

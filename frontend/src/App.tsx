@@ -10,7 +10,11 @@ const Console = lazy(() => import("./pages/Console").then((m) => ({ default: m.C
 const Admin = lazy(() => import("./pages/Admin").then((m) => ({ default: m.Admin })));
 
 function PageLoading() {
-  return <div className="login-shell"><div className="console-status">Loading…</div></div>;
+  return (
+    <div style={{ height: "100%", display: "grid", placeItems: "center" }}>
+      <div className="console-status">Loading…</div>
+    </div>
+  );
 }
 
 export default function App() {
