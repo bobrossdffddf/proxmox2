@@ -11,7 +11,9 @@
  * Each Proxmox node has its own axios instance because the API token is
  * the same across the cluster but the host changes.
  */
+import fs from "fs";
 import https from "https";
+import { Readable } from "stream";
 import axios, { AxiosInstance } from "axios";
 import { env, getNodes, ProxmoxNodeConfig } from "../config";
 import { logger } from "./logger";
@@ -45,6 +47,40 @@ export interface ProxmoxClusterVm {
 
 interface ProxmoxResponse<T> {
   data: T;
+}
+
+export interface ProxmoxStorage {
+  storage: string;
+  type: string;
+  /** Content types this storage accepts: images, iso, vztmpl, import, … */
+  content: string[];
+  active: boolean;
+  shared: boolean;
+  avail: number | null;
+  total: number | null;
+}
+
+export interface ProxmoxVolume {
+  volid: string;
+  size: number;
+  format?: string;
+  ctime?: number;
+}
+
+/**
+ * What Proxmox's own OVF/OVA parser made of an uploaded bundle. Available on
+ * PVE 8.2 and newer; older clusters 501 this endpoint.
+ */
+export interface ProxmoxImportMetadata {
+  type?: string;
+  source?: string;
+  /** VM config keys Proxmox suggests: name, cores, memory, ostype, bios… */
+  "create-args"?: Record<string, string | number>;
+  /** Disk key ("scsi0") to the importable volume behind it. */
+  disks?: Record<string, { volid: string; size?: number } | string>;
+  /** NIC key ("net0") to a model/bridge string. */
+  net?: Record<string, { model?: string; bridge?: string } | string>;
+  warnings?: Array<{ type?: string; key?: string; value?: string } | string>;
 }
 
 export class ProxmoxClusterClient {
@@ -396,6 +432,247 @@ export class ProxmoxClusterClient {
       params.toString(),
       { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
     );
+  }
+
+  // -------------------------------------------------------------------------
+  // Import support
+  //
+  // Everything below backs the VM import pipeline. It leans on the storage
+  // `import` content type and `qm create --scsi0 …,import-from=…`, both of
+  // which arrived in Proxmox VE 8.2 — see capability probing in
+  // services/vmImport/pipeline.ts.
+  // -------------------------------------------------------------------------
+
+  /** Cluster version, e.g. { version: "8.3.2", release: "8.3" }. */
+  async getVersion(node: string): Promise<{ version: string; release: string }> {
+    const res = await this.clientFor(node).get<ProxmoxResponse<{ version: string; release: string }>>(
+      `/version`
+    );
+    return res.data.data;
+  }
+
+  async listStorages(node: string): Promise<ProxmoxStorage[]> {
+    const res = await this.clientFor(node).get<
+      ProxmoxResponse<Array<{
+        storage: string;
+        type: string;
+        content?: string;
+        active?: number;
+        shared?: number;
+        avail?: number;
+        total?: number;
+      }>>
+    >(`/nodes/${node}/storage`);
+
+    return res.data.data.map((s) => ({
+      storage: s.storage,
+      type: s.type,
+      content: (s.content ?? "").split(",").filter(Boolean),
+      active: s.active === 1,
+      shared: s.shared === 1,
+      avail: s.avail ?? null,
+      total: s.total ?? null,
+    }));
+  }
+
+  /** Bridge interfaces available for `net0` on this node. */
+  async listBridges(node: string): Promise<string[]> {
+    const res = await this.clientFor(node).get<ProxmoxResponse<Array<{ iface: string; type: string }>>>(
+      `/nodes/${node}/network?type=any_bridge`
+    );
+    return res.data.data.map((n) => n.iface).sort();
+  }
+
+  async listStorageContent(node: string, storage: string, content?: string): Promise<ProxmoxVolume[]> {
+    const suffix = content ? `?content=${encodeURIComponent(content)}` : "";
+    const res = await this.clientFor(node).get<ProxmoxResponse<ProxmoxVolume[]>>(
+      `/nodes/${node}/storage/${encodeURIComponent(storage)}/content${suffix}`
+    );
+    return res.data.data;
+  }
+
+  async getImportMetadata(node: string, storage: string, volume: string): Promise<ProxmoxImportMetadata> {
+    const res = await this.clientFor(node).get<ProxmoxResponse<ProxmoxImportMetadata>>(
+      `/nodes/${node}/storage/${encodeURIComponent(storage)}/import-metadata?volume=${encodeURIComponent(volume)}`
+    );
+    return res.data.data;
+  }
+
+  /**
+   * Stream a local file into a Proxmox storage.
+   *
+   * Proxmox's upload endpoint wants multipart/form-data with the file field
+   * last, and pveproxy rejects chunked bodies — so the multipart envelope is
+   * assembled by hand with an exact Content-Length, and the file itself is
+   * streamed rather than buffered. `onProgress` fires as bytes go out.
+   */
+  async uploadToStorage(opts: {
+    node: string;
+    storage: string;
+    content: "iso" | "vztmpl" | "import";
+    filePath: string;
+    filename: string;
+    onProgress?: (sent: number, total: number) => void;
+  }): Promise<string> {
+    const { size } = await fs.promises.stat(opts.filePath);
+    const boundary = `----wctarange${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+
+    const field = (name: string, value: string) =>
+      `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`;
+
+    const preamble = Buffer.from(
+      field("content", opts.content) +
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="filename"; filename="${opts.filename}"\r\n` +
+        `Content-Type: application/octet-stream\r\n\r\n`,
+      "utf8"
+    );
+    const epilogue = Buffer.from(`\r\n--${boundary}--\r\n`, "utf8");
+
+    const filePath = opts.filePath;
+    const onProgress = opts.onProgress;
+    const body = Readable.from(
+      (async function* () {
+        yield preamble;
+        let sent = 0;
+        for await (const chunk of fs.createReadStream(filePath, { highWaterMark: 4 * 1024 * 1024 })) {
+          sent += (chunk as Buffer).length;
+          onProgress?.(sent, size);
+          yield chunk as Buffer;
+        }
+        yield epilogue;
+      })()
+    );
+
+    const res = await this.clientFor(opts.node).post<ProxmoxResponse<string>>(
+      `/nodes/${opts.node}/storage/${encodeURIComponent(opts.storage)}/upload`,
+      body,
+      {
+        headers: {
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+          "Content-Length": String(preamble.length + size + epilogue.length),
+        },
+        timeout: 0,
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+      }
+    );
+    return res.data.data;
+  }
+
+  /** Have the node fetch the image itself. Far faster than proxying it twice. */
+  async downloadUrlToStorage(opts: {
+    node: string;
+    storage: string;
+    content: "iso" | "vztmpl" | "import";
+    url: string;
+    filename: string;
+    verifyCertificates?: boolean;
+  }): Promise<string> {
+    const params = new URLSearchParams();
+    params.append("content", opts.content);
+    params.append("filename", opts.filename);
+    params.append("url", opts.url);
+    params.append("verify-certificates", opts.verifyCertificates === false ? "0" : "1");
+
+    const res = await this.clientFor(opts.node).post<ProxmoxResponse<string>>(
+      `/nodes/${opts.node}/storage/${encodeURIComponent(opts.storage)}/download-url`,
+      params.toString(),
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" }, timeout: 60_000 }
+    );
+    return res.data.data;
+  }
+
+  async deleteVolume(node: string, volid: string): Promise<void> {
+    await this.clientFor(node).delete(
+      `/nodes/${node}/storage/${encodeURIComponent(volid.split(":")[0])}/content/${encodeURIComponent(volid)}`
+    );
+  }
+
+  /**
+   * Create a VM from scratch. Disk parameters may carry `import-from=<volid>`,
+   * which is what turns a VMDK into a Proxmox disk without a separate step.
+   */
+  async createVm(node: string, config: Record<string, string | number>): Promise<string> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(config)) {
+      params.append(key, String(value));
+    }
+    const res = await this.clientFor(node).post<ProxmoxResponse<string>>(
+      `/nodes/${node}/qemu`,
+      params.toString(),
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" }, timeout: 120_000 }
+    );
+    return res.data.data;
+  }
+
+  async updateVmConfig(node: string, vmId: number, config: Record<string, string | number>): Promise<void> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(config)) {
+      params.append(key, String(value));
+    }
+    await this.clientFor(node).put(`/nodes/${node}/qemu/${vmId}/config`, params.toString(), {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
+  }
+
+  async convertToTemplate(node: string, vmId: number): Promise<void> {
+    await this.clientFor(node).post(`/nodes/${node}/qemu/${vmId}/template`, "", {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      timeout: 300_000,
+    });
+  }
+
+  /** A free VMID from Proxmox's own allocator. */
+  async getNextVmid(node: string): Promise<number> {
+    const res = await this.clientFor(node).get<ProxmoxResponse<string>>(`/cluster/nextid`);
+    return Number(res.data.data);
+  }
+
+  /** Last lines of a task's log — the only place Proxmox explains a failure. */
+  async getTaskLog(node: string, upid: string, limit = 25): Promise<string[]> {
+    try {
+      const res = await this.clientFor(node).get<ProxmoxResponse<Array<{ n: number; t: string }>>>(
+        `/nodes/${node}/tasks/${encodeURIComponent(upid)}/log?limit=${limit}&start=0`
+      );
+      return res.data.data.map((line) => line.t);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Like waitForTask, but for the hour-long ones: disk conversion on an 80 GB
+   * Windows image is not a two-minute job. Calls `onProgress` on each poll so
+   * the caller can keep a UI alive, and pulls the task log on failure.
+   */
+  async waitForLongTask(
+    node: string,
+    upid: string,
+    opts: { timeoutMs: number; pollMs?: number; onProgress?: (elapsedMs: number) => void }
+  ): Promise<void> {
+    const start = Date.now();
+    const pollMs = opts.pollMs ?? 5000;
+
+    while (Date.now() - start < opts.timeoutMs) {
+      const res = await this.clientFor(node).get<ProxmoxResponse<{ status: string; exitstatus?: string }>>(
+        `/nodes/${node}/tasks/${encodeURIComponent(upid)}/status`
+      );
+      const { status, exitstatus } = res.data.data;
+
+      if (status === "stopped") {
+        if (exitstatus && exitstatus !== "OK") {
+          const log = await this.getTaskLog(node, upid);
+          const detail = log.length > 0 ? `\n${log.slice(-10).join("\n")}` : "";
+          throw new Error(`Proxmox task failed: ${exitstatus}${detail}`);
+        }
+        return;
+      }
+
+      opts.onProgress?.(Date.now() - start);
+      await sleep(pollMs);
+    }
+    throw new Error(`Proxmox task ${upid} timed out after ${Math.round(opts.timeoutMs / 60_000)} minutes`);
   }
 
   /**

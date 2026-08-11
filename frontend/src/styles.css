@@ -1404,6 +1404,265 @@ h1 {
   gap: 12px;
 }
 .import-wide { grid-column: 1 / -1; }
+
+/* ---- Import wizard ---- */
+
+.admin-hint {
+  color: var(--text-2);
+  font-size: 12.5px;
+  margin: 0 0 14px;
+  max-width: 78ch;
+}
+.admin-hint code,
+.import-checklist code,
+.import-dropzone code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--accent-bright);
+  background: var(--accent-soft);
+  border-radius: 2px;
+  padding: 1px 4px;
+}
+.admin-message {
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--line-strong);
+  border-radius: var(--r);
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+.admin-message.ok { border-left-color: var(--ok); color: var(--ok); background: var(--ok-soft); }
+.admin-message.error { border-left-color: var(--bad); color: var(--bad); background: var(--bad-soft); }
+
+.import-cluster-note { text-align: right; }
+
+.import-section-head {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin: 22px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+.import-section-head:first-of-type { margin-top: 4px; }
+
+/* Drop target */
+.import-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+  padding: 34px 24px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+.import-dropzone.dragging {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.import-dropzone.uploading { border-style: solid; }
+.import-dropzone .name { font-weight: 600; font-size: 15px; font-family: var(--font-display); }
+.import-dropzone p { margin: 0; color: var(--text-2); max-width: 62ch; font-size: 13px; }
+
+.import-blockers { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.import-blocker {
+  background: var(--warn-soft);
+  border: 1px solid rgba(232, 176, 75, 0.3);
+  border-radius: var(--r);
+  padding: 10px 14px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.import-blocker ul { margin: 6px 0 0; padding-left: 18px; }
+
+/* Progress + stages */
+.import-progress {
+  width: 100%;
+  height: 6px;
+  background: var(--surface-3);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.import-progress .fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+.import-progress .fill.failed { background: var(--bad); }
+
+.import-stagebar { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.import-stages { display: flex; flex-wrap: wrap; gap: 6px; }
+.import-stage {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--text-3);
+}
+.import-stage.done { color: var(--ok); border-color: rgba(82, 212, 145, 0.35); }
+.import-stage.current { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+.import-stage.failed { color: var(--bad); border-color: var(--bad); }
+
+.import-status {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.import-status.ready { color: var(--accent-bright); border-color: var(--accent-line); }
+.import-status.queued, .import-status.running, .import-status.inspecting { color: var(--warn); border-color: rgba(232, 176, 75, 0.4); }
+.import-status.awaiting_prep { color: var(--warn); border-color: rgba(232, 176, 75, 0.4); }
+.import-status.succeeded { color: var(--ok); border-color: rgba(82, 212, 145, 0.4); }
+.import-status.failed, .import-status.cancelled { color: var(--bad); border-color: rgba(255, 107, 107, 0.4); }
+
+/* What we found in the bundle */
+.import-findings { display: flex; flex-direction: column; gap: 14px; }
+.import-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 10px;
+}
+.import-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 9px 11px;
+}
+.import-fact strong { font-size: 13px; font-weight: 600; }
+
+.import-files { display: flex; flex-direction: column; gap: 3px; }
+.import-file {
+  display: grid;
+  grid-template-columns: 110px 1fr 90px;
+  gap: 10px;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: var(--r);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  font-size: 12px;
+}
+.import-file .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-file .size { text-align: right; color: var(--text-2); }
+.import-file.role-disk { border-left: 2px solid var(--accent); }
+.import-file.role-ovf,
+.import-file.role-vmx { border-left: 2px solid var(--ok); }
+.import-file.role-other { opacity: 0.55; }
+
+.import-warnings {
+  margin: 0;
+  padding: 10px 14px 10px 32px;
+  background: var(--warn-soft);
+  border: 1px solid rgba(232, 176, 75, 0.3);
+  border-radius: var(--r);
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+.import-warnings li + li { margin-top: 4px; }
+
+/* Options + actions */
+.import-toggles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+.import-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.import-toggle input { width: auto; margin: 2px 0 0; accent-color: var(--accent); }
+.import-toggle em { display: block; font-style: normal; color: var(--text-3); font-size: 11.5px; }
+
+.import-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+/* Guest prep — the one step the wizard can't do for you, so it's marked. */
+.import-prep {
+  border-left: 2px solid var(--warn);
+  padding: 2px 0 4px 18px;
+}
+.import-prep p { color: var(--text-2); max-width: 80ch; }
+.import-checklist {
+  margin: 14px 0 0;
+  padding-left: 20px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.import-checklist li { margin-bottom: 7px; }
+
+/* Log */
+.import-log {
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.75;
+}
+.import-log-line { display: grid; grid-template-columns: 82px 1fr; gap: 10px; }
+.import-log-line .ts { color: var(--text-3); }
+.import-log-line .msg { color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
+.import-log-line.warn .msg { color: var(--warn); }
+.import-log-line.error .msg { color: var(--bad); }
+
+/* History + tiles */
+.import-history-row,
+.import-tile-row {
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) auto auto auto;
+  gap: 12px;
+  align-items: center;
+  text-align: left;
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 11px 13px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text);
+}
+.import-history-row:hover { border-color: var(--line-strong); }
+.import-history-row.current { border-color: var(--accent-line); background: var(--accent-soft); }
+.import-tile-row { grid-template-columns: minmax(180px, 0.8fr) minmax(200px, 1fr) auto auto; }
+.import-tile-row .name,
+.import-history-row .name { font-weight: 600; }
 .import-steps { display: flex; flex-direction: column; gap: 8px; }
 .import-step {
   background: var(--surface);
@@ -1508,11 +1767,17 @@ h1 {
   .admin-session-row,
   .staging-target-row,
   .import-grid,
+  .import-file,
+  .import-history-row,
+  .import-tile-row,
+  .import-log-line,
   .resource-row,
   .clipboard-bar,
   .admin-log-row {
     grid-template-columns: 1fr;
   }
+  .import-cluster-note { text-align: left; }
+  .import-file .size { text-align: left; }
   .session-row .actions,
   .admin-toolbar-actions { justify-content: flex-start; }
 }

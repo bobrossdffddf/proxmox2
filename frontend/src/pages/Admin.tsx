@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { AdminSession, AdminStats, AdminUser, Announcement, api, AuditLog, ResourceReport, SessionNote, StagedVm, StagingTarget } from "../api";
 import { TopClock, Wordmark } from "../components/Brand";
+import { ImportWizard } from "../components/ImportWizard";
 
 type Tab = "overview" | "users" | "sessions" | "resources" | "staging" | "import" | "announcements" | "notes" | "logs";
 
@@ -72,85 +73,6 @@ function BarList({ rows }: { rows: Array<{ label: string; value: number; detail?
         </div>
       ))}
     </div>
-  );
-}
-
-function ImportWizard() {
-  const [form, setForm] = useState({
-    vmid: "9101",
-    name: "windows11-import",
-    storage: "datastore-g10",
-    bridge: "vmbr0",
-    sourceFile: "/var/lib/vz/template/import/image.ova",
-  });
-
-  const isOva = form.sourceFile.toLowerCase().endsWith(".ova");
-  const importCommands = isOva
-    ? [
-        "mkdir -p /var/lib/vz/template/import",
-        `mkdir -p /var/lib/vz/template/import/${form.name}`,
-        `tar -xvf ${form.sourceFile} -C /var/lib/vz/template/import/${form.name}`,
-        `qm create ${form.vmid} --name ${form.name} --memory 4096 --cores 4 --net0 virtio,bridge=${form.bridge} --ostype win11`,
-        `qm importdisk ${form.vmid} /var/lib/vz/template/import/${form.name}/*.vmdk ${form.storage}`,
-        `qm set ${form.vmid} --scsihw virtio-scsi-pci --scsi0 ${form.storage}:vm-${form.vmid}-disk-0`,
-        `qm set ${form.vmid} --boot order=scsi0 --agent enabled=1`,
-        `qm template ${form.vmid}`,
-      ]
-    : [
-        `qm create ${form.vmid} --name ${form.name} --memory 4096 --cores 4 --net0 virtio,bridge=${form.bridge}`,
-        `qm importdisk ${form.vmid} ${form.sourceFile} ${form.storage}`,
-        `qm set ${form.vmid} --scsihw virtio-scsi-pci --scsi0 ${form.storage}:vm-${form.vmid}-disk-0`,
-        `qm set ${form.vmid} --boot order=scsi0 --agent enabled=1`,
-        `qm template ${form.vmid}`,
-      ];
-
-  return (
-    <>
-      <section className="admin-panel">
-        <h2>VMware / OVA Import Wizard</h2>
-        <div className="import-grid">
-          <label>
-            <span>New VMID</span>
-            <input value={form.vmid} onChange={(e) => setForm({ ...form, vmid: e.target.value })} />
-          </label>
-          <label>
-            <span>Name</span>
-            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          </label>
-          <label>
-            <span>Target storage</span>
-            <input value={form.storage} onChange={(e) => setForm({ ...form, storage: e.target.value })} />
-          </label>
-          <label>
-            <span>Network bridge</span>
-            <input value={form.bridge} onChange={(e) => setForm({ ...form, bridge: e.target.value })} />
-          </label>
-          <label className="import-wide">
-            <span>Uploaded OVA, VMDK, QCOW2, or RAW path</span>
-            <input value={form.sourceFile} onChange={(e) => setForm({ ...form, sourceFile: e.target.value })} />
-          </label>
-        </div>
-      </section>
-
-      <section className="admin-panel">
-        <h2>Generated Steps</h2>
-        <div className="import-steps">
-          <div className="import-step">
-            <div className="name">1. Upload the image to the Proxmox node</div>
-            <div className="meta">Put the file at the path above. For local storage, upload it to the node that will host this template.</div>
-          </div>
-          <div className="import-step">
-            <div className="name">2. Run these on that Proxmox node</div>
-            <pre>{importCommands.join("\n")}</pre>
-          </div>
-          <div className="import-step">
-            <div className="name">3. Add the VMID to WCTARange</div>
-            <pre>{`proxmox_template_id: ${form.vmid}
-snapshot_name: ""`}</pre>
-          </div>
-        </div>
-      </section>
-    </>
   );
 }
 

@@ -81,6 +81,18 @@ That's it. The database schema auto-applies on first boot.
 
 ## Adding a new practice image
 
+### From a VMware export (the usual case)
+
+Go to **Admin → Import** and drop the file on it — a `.zip` of the VM folder, an
+`.ova`, or a bare disk image. It reads the bundle, works out the CPU, memory,
+disks and guest OS, creates the VM on Proxmox and converts the disks, then hands
+back for guest preparation and publishes the dashboard tile. No SSH, no
+`qm importdisk`, no editing YAML.
+
+Full walkthrough and requirements: [`docs/importing-vms.md`](docs/importing-vms.md).
+
+### From a template you build yourself
+
 1. Build the template on any Proxmox node. Install your software. Take a snapshot named `baseline`.
 2. Add an entry to `config/templates.yaml`:
    ```yaml
@@ -103,7 +115,8 @@ That's it. The database schema auto-applies on first boot.
 
 - `.env` — secrets, timeouts, quotas.
 - `config/nodes.yaml` — your Proxmox node hostnames.
-- `config/templates.yaml` — the list of practice images. This drives the dashboard tiles.
+- `config/templates.yaml` — hand-written practice images. Tiles created by
+  **Admin → Import** live in the database instead, so this file stays optional.
 
 Everything else is generated code.
 

@@ -10,6 +10,7 @@ import { many, one, query } from "../db/client";
 import { AuthedRequest, requireAdmin, requireAuth } from "../middleware/auth";
 import { HttpError } from "../middleware/errorHandler";
 import { audit } from "../services/audit";
+import { refreshImportedTemplates } from "../services/importedTemplates";
 import { getSessionById, listAllLiveSessions, markSessionStopped } from "../services/sessionManager";
 import { proxmox } from "../services/proxmox";
 import { ensureAllStagedVms } from "../services/stagingMaintainer";
@@ -703,6 +704,9 @@ router.get("/users/:id/audit", async (req, res) => {
 
 router.post("/reload", async (_req, res) => {
   reloadConfigs();
+  // Templates come from two places now: the YAML above and the imported ones in
+  // Postgres. Reload both, or a reload would quietly drop the imported tiles.
+  await refreshImportedTemplates();
   await ensureAllStagedVms();
   await audit({ action: "admin.reload_configs" });
   res.json({ ok: true, nodes: getNodes().length, templates: getTemplates().length });

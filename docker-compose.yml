@@ -67,8 +67,16 @@ services:
       VM_ID_RANGE_START: ${VM_ID_RANGE_START}
       VM_ID_RANGE_END: ${VM_ID_RANGE_END}
       CONFIG_DIR: /app/config
+      IMPORT_DIR: /app/uploads
+      IMPORT_MAX_UPLOAD_GB: ${IMPORT_MAX_UPLOAD_GB:-128}
+      IMPORT_VMID_RANGE_START: ${IMPORT_VMID_RANGE_START:-9000}
+      IMPORT_VMID_RANGE_END: ${IMPORT_VMID_RANGE_END:-9899}
+      IMPORT_TASK_TIMEOUT_MINUTES: ${IMPORT_TASK_TIMEOUT_MINUTES:-240}
     volumes:
       - ./config:/app/config:ro
+      # Uploaded VM bundles are staged here and repackaged in place. Needs room
+      # for the largest image you'll import, roughly twice over.
+      - import-uploads:/app/uploads
     ports:
       - "${BACKEND_PORT}:3000"
 
@@ -87,3 +95,4 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  import-uploads:

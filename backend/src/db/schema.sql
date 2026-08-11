@@ -103,6 +103,74 @@ CREATE TABLE IF NOT EXISTS template_staging_settings (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- ---------------------------------------------------------------------------
+-- VM imports. One row per uploaded VMware/OVA bundle, from the moment the
+-- upload starts until the template exists (or the run fails). `inspection`
+-- holds what we read out of the bundle, `settings` what the admin confirmed.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS vm_imports (
+  id                BIGSERIAL PRIMARY KEY,
+  public_id         VARCHAR(32) UNIQUE NOT NULL,
+  original_filename TEXT NOT NULL,
+  upload_path       TEXT,
+  upload_bytes      BIGINT NOT NULL DEFAULT 0,
+  status            VARCHAR(16) NOT NULL DEFAULT 'inspecting',
+  -- 'inspecting' | 'ready' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  stage             VARCHAR(16) NOT NULL DEFAULT 'upload',
+  progress          INT NOT NULL DEFAULT 0,
+  inspection        JSONB,
+  settings          JSONB,
+  result            JSONB,
+  error             TEXT,
+  created_by        INT REFERENCES users(id) ON DELETE SET NULL,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  finished_at       TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS vm_imports_status_idx  ON vm_imports(status);
+CREATE INDEX IF NOT EXISTS vm_imports_created_idx ON vm_imports(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS vm_import_log (
+  id         BIGSERIAL PRIMARY KEY,
+  import_id  BIGINT NOT NULL REFERENCES vm_imports(id) ON DELETE CASCADE,
+  level      VARCHAR(8) NOT NULL DEFAULT 'info',
+  -- 'info' | 'warn' | 'error'
+  message    TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS vm_import_log_import_idx ON vm_import_log(import_id, id);
+
+-- ---------------------------------------------------------------------------
+-- Templates registered by the import wizard. Same shape as a templates.yaml
+-- entry; kept here so the config mount stays read-only and a new tile shows up
+-- without a container restart. YAML entries win on an id collision.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS imported_templates (
+  id                  VARCHAR(64) PRIMARY KEY,
+  name                VARCHAR(128) NOT NULL,
+  description         TEXT NOT NULL DEFAULT '',
+  icon                VARCHAR(16) NOT NULL DEFAULT 'generic',
+  proxmox_template_id INT NOT NULL,
+  proxmox_template_ids JSONB,
+  snapshot_name       VARCHAR(64) NOT NULL DEFAULT '',
+  protocol            VARCHAR(8) NOT NULL,
+  port                INT NOT NULL,
+  username            VARCHAR(128) NOT NULL,
+  password            TEXT NOT NULL,
+  cpu_cores           INT NOT NULL,
+  memory_mb           INT NOT NULL,
+  staging_pool_size   INT NOT NULL DEFAULT 1,
+  enabled             BOOLEAN NOT NULL DEFAULT TRUE,
+  color               VARCHAR(16),
+  source_import_id    BIGINT REFERENCES vm_imports(id) ON DELETE SET NULL,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Backfill migrations for existing deployments
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS max_vms INT NOT NULL DEFAULT 1;
