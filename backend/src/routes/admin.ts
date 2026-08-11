@@ -10,6 +10,7 @@ import { many, one, query } from "../db/client";
 import { AuthedRequest, requireAdmin, requireAuth } from "../middleware/auth";
 import { HttpError } from "../middleware/errorHandler";
 import { audit } from "../services/audit";
+import { refreshImportedTemplates } from "../services/importedTemplates";
 import { getSessionById, listAllLiveSessions, markSessionStopped } from "../services/sessionManager";
 import { proxmox } from "../services/proxmox";
 import { ensureAllStagedVms } from "../services/stagingMaintainer";
@@ -188,6 +189,86 @@ router.post("/users/:id/enable", async (req, res) => {
 router.get("/sessions", async (_req, res) => {
   const all = await listAllLiveSessions();
   res.json(all);
+});
+
+/**
+ * Usage stats for the overview charts: launches per day, per template, and
+ * per student over the last 30 days, plus completed-session durations.
+ */
+router.get("/stats", async (_req, res) => {
+  const [perDay, perTemplate, perUser, totals] = await Promise.all([
+    many<{ day: string; count: string }>(
+      `SELECT to_char(created_at::date, 'YYYY-MM-DD') AS day, COUNT(*)::text AS count
+       FROM sessions
+       WHERE created_at >= NOW() - INTERVAL '30 days'
+       GROUP BY created_at::date
+       ORDER BY created_at::date`
+    ),
+    many<{ template_id: string; template_name: string; count: string; users: string }>(
+      `SELECT template_id, MAX(template_name) AS template_name,
+              COUNT(*)::text AS count, COUNT(DISTINCT user_id)::text AS users
+       FROM sessions
+       WHERE created_at >= NOW() - INTERVAL '30 days'
+       GROUP BY template_id
+       ORDER BY COUNT(*) DESC
+       LIMIT 12`
+    ),
+    many<{ username: string; count: string; minutes: string }>(
+      `SELECT u.username, COUNT(*)::text AS count,
+              COALESCE(SUM(EXTRACT(EPOCH FROM (COALESCE(s.cleaned_up_at, NOW()) - s.created_at)) / 60), 0)::int::text AS minutes
+       FROM sessions s JOIN users u ON u.id = s.user_id
+       WHERE s.created_at >= NOW() - INTERVAL '30 days'
+       GROUP BY u.username
+       ORDER BY COUNT(*) DESC
+       LIMIT 12`
+    ),
+    one<{ total: string; last7: string; avg_minutes: string | null }>(
+      `SELECT COUNT(*)::text AS total,
+              COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days')::text AS last7,
+              AVG(EXTRACT(EPOCH FROM (cleaned_up_at - created_at)) / 60)
+                FILTER (WHERE cleaned_up_at IS NOT NULL)::int::text AS avg_minutes
+       FROM sessions`
+    ),
+  ]);
+
+  res.json({
+    perDay: perDay.map((r) => ({ day: r.day, count: Number(r.count) })),
+    perTemplate: perTemplate.map((r) => ({
+      templateId: r.template_id,
+      templateName: r.template_name,
+      count: Number(r.count),
+      users: Number(r.users),
+    })),
+    perUser: perUser.map((r) => ({
+      username: r.username,
+      count: Number(r.count),
+      minutes: Number(r.minutes),
+    })),
+    totals: {
+      total: Number(totals?.total ?? 0),
+      last7: Number(totals?.last7 ?? 0),
+      avgMinutes: totals?.avg_minutes ? Number(totals.avg_minutes) : null,
+    },
+  });
+});
+
+/** Session debrief notes students left before stopping their VMs. */
+router.get("/notes", async (_req, res) => {
+  const rows = await many<{
+    id: number;
+    username: string;
+    template_name: string;
+    created_at: Date;
+    cleaned_up_at: Date | null;
+    notes: string;
+  }>(
+    `SELECT s.id, u.username, s.template_name, s.created_at, s.cleaned_up_at, s.notes
+     FROM sessions s JOIN users u ON u.id = s.user_id
+     WHERE s.notes IS NOT NULL AND s.notes <> ''
+     ORDER BY s.created_at DESC
+     LIMIT 100`
+  );
+  res.json(rows);
 });
 
 router.get("/resources", async (_req, res) => {
@@ -623,6 +704,9 @@ router.get("/users/:id/audit", async (req, res) => {
 
 router.post("/reload", async (_req, res) => {
   reloadConfigs();
+  // Templates come from two places now: the YAML above and the imported ones in
+  // Postgres. Reload both, or a reload would quietly drop the imported tiles.
+  await refreshImportedTemplates();
   await ensureAllStagedVms();
   await audit({ action: "admin.reload_configs" });
   res.json({ ok: true, nodes: getNodes().length, templates: getTemplates().length });

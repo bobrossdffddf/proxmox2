@@ -1,5 +1,10 @@
 # Building a template VM
 
+> **Importing an existing VMware image?** Don't do it by hand — use
+> **Admin → Import**, which reads the bundle, creates the VM, and publishes the
+> tile for you. See [importing-vms.md](importing-vms.md). This page is for
+> templates you build from scratch on Proxmox.
+
 A "template" in WCTARange is a Proxmox template VM on your cluster that:
 
 1. Has the QEMU guest agent installed and running.

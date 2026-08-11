@@ -38,6 +38,7 @@ const envSchema = z.object({
   MAX_VMS_PER_USER: z.coerce.number().default(2),
   MAX_CLUSTER_VMS: z.coerce.number().default(60),
   SESSION_HARD_TIMEOUT_MINUTES: z.coerce.number().default(240),
+  SESSION_EXTEND_MINUTES: z.coerce.number().default(60),
   SESSION_INACTIVITY_TIMEOUT_MINUTES: z.coerce.number().default(30),
   HEARTBEAT_INTERVAL_SECONDS: z.coerce.number().default(10),
 
@@ -45,6 +46,16 @@ const envSchema = z.object({
   VM_ID_RANGE_END: z.coerce.number().default(19999),
 
   CONFIG_DIR: z.string().default("/app/config"),
+
+  // VM import pipeline. Uploaded bundles land in IMPORT_DIR, get repackaged
+  // there, and are deleted once the import finishes.
+  IMPORT_DIR: z.string().default("/app/uploads"),
+  IMPORT_MAX_UPLOAD_GB: z.coerce.number().default(128),
+  /** VMIDs for imported templates live outside the clone pool. */
+  IMPORT_VMID_RANGE_START: z.coerce.number().default(9000),
+  IMPORT_VMID_RANGE_END: z.coerce.number().default(9899),
+  /** Ceiling for the disk-conversion task, which dominates a large import. */
+  IMPORT_TASK_TIMEOUT_MINUTES: z.coerce.number().default(240),
 });
 
 export const env = envSchema.parse(process.env);
@@ -127,6 +138,14 @@ function readYaml<T>(file: string, schema: z.ZodType<T>): T {
 
 let _nodes: ProxmoxNodeConfig[] | null = null;
 let _templates: TemplateConfig[] | null = null;
+/**
+ * Templates created by the import wizard. They live in Postgres rather than
+ * templates.yaml so the config mount can stay read-only and a new tile appears
+ * without editing a file or restarting the container. Kept in this module so
+ * getTemplates() can stay synchronous for its many callers; the DB read happens
+ * at startup and after each import (see services/importedTemplates.ts).
+ */
+let _imported: TemplateConfig[] = [];
 
 export function getNodes(): ProxmoxNodeConfig[] {
   if (!_nodes) {
@@ -139,7 +158,22 @@ export function getTemplates(): TemplateConfig[] {
   if (!_templates) {
     _templates = readYaml("templates.yaml", templatesFileSchema).templates as TemplateConfig[];
   }
-  return _templates;
+  if (_imported.length === 0) return _templates;
+
+  // A YAML entry with the same id wins: hand-written config is the more
+  // deliberate of the two.
+  const yamlIds = new Set(_templates.map((t) => t.id));
+  return [..._templates, ..._imported.filter((t) => !yamlIds.has(t.id))];
+}
+
+/** Replace the imported-template overlay. Called after loading them from the DB. */
+export function setImportedTemplates(templates: TemplateConfig[]): void {
+  _imported = templates;
+}
+
+/** Validate a template record from outside the YAML file (i.e. from Postgres). */
+export function parseTemplateConfig(raw: unknown): TemplateConfig {
+  return templateSchema.parse(raw) as TemplateConfig;
 }
 
 export function getTemplate(id: string): TemplateConfig | undefined {

@@ -24,12 +24,15 @@ import vmRouter from "./routes/vm";
 import adminRouter from "./routes/admin";
 import rdpRouter from "./routes/rdp";
 import announcementsRouter from "./routes/announcements";
+import importsRouter from "./routes/imports";
 
 import { createRdpProxy } from "./rdp/proxy";
 import { createNoVncProxy } from "./rdp/novnc";
 import { startProvisioningWorker } from "./jobs/provisioningWorker";
 import { startCleanupWorker } from "./jobs/cleanupWorker";
 import { startInactivityMonitor } from "./jobs/inactivityMonitor";
+import { failInterruptedImports, startImportWorker } from "./jobs/importWorker";
+import { refreshImportedTemplates } from "./services/importedTemplates";
 import { ensureAllStagedVms } from "./services/stagingMaintainer";
 import { parse as parseUrl } from "url";
 
@@ -41,8 +44,10 @@ async function main() {
   const templates = getTemplates();
   logger.info({ nodes: nodes.length, templates: templates.length }, "config loaded");
 
-  // 2. DB schema
+  // 2. DB schema, then the templates that live in it rather than in YAML
   await applySchema();
+  const imported = await refreshImportedTemplates();
+  if (imported.length > 0) logger.info({ imported: imported.length }, "imported templates loaded");
 
   // 3. Express
   const app = express();
@@ -56,6 +61,9 @@ async function main() {
   app.use("/api/auth", authRouter);
   app.use("/api/templates", templatesRouter);
   app.use("/api/vm", vmRouter);
+  // Mounted before the admin router so /api/admin/imports/* isn't shadowed by
+  // any admin route pattern.
+  app.use("/api/admin/imports", importsRouter);
   app.use("/api/admin", adminRouter);
   app.use("/api/rdp", rdpRouter);
   app.use("/api/announcements", announcementsRouter);
@@ -65,7 +73,9 @@ async function main() {
   // 4. Workers
   const provisioner = startProvisioningWorker();
   const cleaner = startCleanupWorker();
+  const importer = startImportWorker();
   const sweeper = startInactivityMonitor();
+  await failInterruptedImports();
   await ensureAllStagedVms();
 
   // 5. HTTP + WS
@@ -110,6 +120,7 @@ async function main() {
     clearInterval(sweeper);
     await provisioner.close();
     await cleaner.close();
+    await importer.close();
     process.exit(0);
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));

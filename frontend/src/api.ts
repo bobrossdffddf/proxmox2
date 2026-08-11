@@ -157,6 +157,168 @@ export interface TileTemplate {
   color: string | null;
   cpu_cores: number;
   memory_mb: number;
+  ready_count: number;
+}
+
+export interface AdminStats {
+  perDay: Array<{ day: string; count: number }>;
+  perTemplate: Array<{ templateId: string; templateName: string; count: number; users: number }>;
+  perUser: Array<{ username: string; count: number; minutes: number }>;
+  totals: { total: number; last7: number; avgMinutes: number | null };
+}
+
+export interface SessionNote {
+  id: number;
+  username: string;
+  template_name: string;
+  created_at: string;
+  cleaned_up_at: string | null;
+  notes: string;
+}
+
+// ---- VM import ----
+
+export type ImportStatus =
+  | "inspecting" | "ready" | "queued" | "running" | "awaiting_prep" | "succeeded" | "failed" | "cancelled";
+
+export type ImportStage =
+  | "upload" | "inspect" | "package" | "transfer" | "create" | "configure" | "prep" | "template" | "register" | "done";
+
+export type BundleFileRole = "ovf" | "vmx" | "disk" | "disk-extent" | "nvram" | "manifest" | "iso" | "other";
+
+export interface BundleFile {
+  name: string;
+  flatName: string;
+  size: number;
+  role: BundleFileRole;
+}
+
+export interface GuestSpec {
+  name: string;
+  ostype: string;
+  osLabel: string;
+  family: "windows" | "linux" | "other";
+  icon: TileTemplate["icon"];
+  protocol: "rdp" | "vnc";
+  port: number;
+  defaultUsername: string;
+  cores: number;
+  memoryMb: number;
+  firmware: "seabios" | "ovmf";
+  scsihw: string;
+  nicModel: string;
+  disks: Array<{ file: string; capacityBytes: number | null; slot: number }>;
+  source: "ovf" | "vmx" | "heuristic";
+}
+
+export interface BundleInspection {
+  container: "zip" | "ova" | "raw";
+  files: BundleFile[];
+  spec: GuestSpec;
+  totalDiskBytes: number;
+  warnings: string[];
+}
+
+export interface ImportSettings {
+  templateId: string;
+  templateName: string;
+  description: string;
+  icon: TileTemplate["icon"];
+  node: string;
+  storage: string;
+  importStorage: string;
+  bridge: string;
+  vlanTag: number | null;
+  vmid: number;
+  cores: number;
+  memoryMb: number;
+  ostype: string;
+  firmware: "seabios" | "ovmf";
+  protocol: "rdp" | "vnc";
+  port: number;
+  username: string;
+  password: string;
+  stagingPoolSize: number;
+  strategy: "ova" | "disk";
+  busType: "auto" | "sata" | "scsi" | "ide" | "virtio";
+  addTpm: boolean;
+  virtioIso: string | null;
+  keepUpload: boolean;
+  registerTemplate: boolean;
+  startAfterImport: boolean;
+}
+
+export interface VmImport {
+  id: string;
+  originalFilename: string;
+  uploadBytes: number;
+  status: ImportStatus;
+  stage: ImportStage;
+  progress: number;
+  inspection: BundleInspection | null;
+  settings: ImportSettings | null;
+  result: { vmid: number; node: string; templateId: string | null; storage: string } | null;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+}
+
+export interface ImportLogLine {
+  id: string;
+  level: "info" | "warn" | "error";
+  message: string;
+  created_at: string;
+}
+
+export interface ImportStorageInfo {
+  storage: string;
+  type: string;
+  avail: number | null;
+  total: number | null;
+}
+
+export interface NodeCapability {
+  node: string;
+  host: string;
+  port: number;
+  reachable: boolean;
+  version: string | null;
+  supportsApiImport: boolean;
+  importStorages: ImportStorageInfo[];
+  imageStorages: ImportStorageInfo[];
+  virtioIsos: string[];
+  bridges: string[];
+  blockers: string[];
+}
+
+export interface ImportCapabilities {
+  nodes: NodeCapability[];
+  staging: { dir: string; freeBytes: number | null; freeLabel: string | null; maxUploadGb: number };
+  vmidRange: { start: number; end: number };
+}
+
+export interface ImportedTemplate {
+  id: string;
+  name: string;
+  icon: TileTemplate["icon"];
+  protocol: "rdp" | "vnc";
+  proxmoxTemplateId: number;
+  cpuCores: number;
+  memoryMb: number;
+  stagingPoolSize: number;
+  enabled: boolean;
+  createdAt: string;
+}
+
+/**
+ * The upload endpoint accepts a plain file name only. Real exports are called
+ * things like "CyberPatriot Win11 (final).zip", so the punctuation is folded
+ * down here rather than rejected server-side.
+ */
+export function sanitizeUploadName(name: string): string {
+  const cleaned = name.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[^A-Za-z0-9]+/, "");
+  return (cleaned || "upload.zip").slice(0, 200);
 }
 
 export type SessionStatus =
@@ -175,6 +337,9 @@ export interface SessionView {
   hardExpiresAt: string;
   guestUsername: string | null;
   guestPassword: string | null;
+  extendedMinutes: number;
+  notes: string | null;
+  isOwner?: boolean;
 }
 
 export const api = {
@@ -201,6 +366,18 @@ export const api = {
     }),
   stopSession: (publicId: string) =>
     request<{ ok: true }>(`/api/vm/sessions/${publicId}`, { method: "DELETE" }),
+  extendSession: (publicId: string) =>
+    request<SessionView>(`/api/vm/sessions/${publicId}/extend`, { method: "POST" }),
+  saveSessionNotes: (publicId: string, notes: string) =>
+    request<{ ok: true }>(`/api/vm/sessions/${publicId}/notes`, {
+      method: "POST",
+      body: JSON.stringify({ notes }),
+    }),
+  pushFileToVm: (publicId: string, name: string, contentBase64: string) =>
+    request<{ ok: true; guestPath: string }>(`/api/vm/sessions/${publicId}/files`, {
+      method: "POST",
+      body: JSON.stringify({ name, contentBase64 }),
+    }),
   announcements: () => request<Announcement[]>("/api/announcements"),
 
   adminUsers: () => request<AdminUser[]>("/api/admin/users"),
@@ -247,10 +424,81 @@ export const api = {
     request<Announcement>("/api/admin/announcements", { method: "POST", body: JSON.stringify(payload) }),
   deactivateAnnouncement: (id: number) =>
     request<{ ok: true }>(`/api/admin/announcements/${id}/deactivate`, { method: "POST" }),
+  adminStats: () => request<AdminStats>("/api/admin/stats"),
+  adminNotes: () => request<SessionNote[]>("/api/admin/notes"),
 
-  rdpToken: (sessionId: string) =>
-    request<{ token: string; sessionPublicId: string }>("/api/rdp/connect", {
+  // ---- VM import ----
+  importCapabilities: () => request<ImportCapabilities>("/api/admin/imports/capabilities"),
+  listImports: () => request<VmImport[]>("/api/admin/imports"),
+  getImport: (id: string, since = 0) =>
+    request<{ import: VmImport; log: ImportLogLine[]; suggested: ImportSettings | null }>(
+      `/api/admin/imports/${id}?since=${since}`
+    ),
+  startImport: (id: string, settings: ImportSettings) =>
+    request<{ ok: true; import: VmImport }>(`/api/admin/imports/${id}/start`, {
       method: "POST",
-      body: JSON.stringify({ sessionId }),
+      body: JSON.stringify(settings),
     }),
+  finalizeImport: (id: string) =>
+    request<{ ok: true; vmid: number; templateId: string | null; import: VmImport }>(
+      `/api/admin/imports/${id}/finalize`,
+      { method: "POST" }
+    ),
+  cancelImport: (id: string) =>
+    request<{ ok: true }>(`/api/admin/imports/${id}/cancel`, { method: "POST" }),
+  deleteImport: (id: string) => request<{ ok: true }>(`/api/admin/imports/${id}`, { method: "DELETE" }),
+  importCommands: (id: string) => request<{ commands: string[] }>(`/api/admin/imports/${id}/commands`),
+
+  importedTemplates: () => request<ImportedTemplate[]>("/api/admin/imports/templates"),
+  setImportedTemplateEnabled: (id: string, enabled: boolean) =>
+    request<{ ok: true }>(`/api/admin/imports/templates/${id}/enabled`, {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
+  deleteImportedTemplate: (id: string) =>
+    request<{ ok: true }>(`/api/admin/imports/templates/${id}`, { method: "DELETE" }),
+
+  /**
+   * Upload a bundle. Uses XMLHttpRequest rather than fetch purely for
+   * `upload.onprogress` — these files run to tens of gigabytes and a bar that
+   * doesn't move is indistinguishable from a hang.
+   */
+  uploadImport(
+    file: File,
+    onProgress: (percent: number, loaded: number) => void,
+    onXhr?: (xhr: XMLHttpRequest) => void
+  ): Promise<{ import: VmImport; suggested: ImportSettings }> {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const name = sanitizeUploadName(file.name);
+      xhr.open("POST", `/api/admin/imports/upload?filename=${encodeURIComponent(name)}`);
+
+      const token = getToken();
+      if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      xhr.setRequestHeader("Content-Type", "application/octet-stream");
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress((event.loaded / event.total) * 100, event.loaded);
+      };
+      xhr.onload = () => {
+        let body: unknown = null;
+        try {
+          body = JSON.parse(xhr.responseText);
+        } catch {
+          /* handled below */
+        }
+        if (xhr.status >= 200 && xhr.status < 300 && body) {
+          resolve(body as { import: VmImport; suggested: ImportSettings });
+        } else {
+          const message = (body as { error?: string } | null)?.error ?? xhr.statusText ?? "upload failed";
+          reject(new Error(message));
+        }
+      };
+      xhr.onerror = () => reject(new Error("Upload failed — the connection dropped"));
+      xhr.onabort = () => reject(new Error("Upload cancelled"));
+
+      onXhr?.(xhr);
+      xhr.send(file);
+    });
+  },
 };

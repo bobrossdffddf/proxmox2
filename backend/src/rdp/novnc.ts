@@ -69,11 +69,18 @@ export function createNoVncProxy() {
     }
 
     try {
-      const decoded = verify(token, env.JWT_SECRET) as unknown as { sub: number };
+      const decoded = verify(token, env.JWT_SECRET) as unknown as { sub: number; role?: string };
       const session = await getSessionByPublicId(sessionPublicId);
       if (!session) throw new Error("Session not found");
-      if (session.user_id !== decoded.sub) throw new Error("Forbidden");
+      const isOwner = session.user_id === decoded.sub;
+      // Admins may attach to any running session, but only as spectators:
+      // their input is stripped from the RFB stream below.
+      const spectator = !isOwner && decoded.role === "admin";
+      if (!isOwner && !spectator) throw new Error("Forbidden");
       if (session.status !== "running") throw new Error("Session not running");
+      if (spectator) {
+        logger.info({ vmId: session.proxmox_vmid, adminId: decoded.sub }, "admin spectating session");
+      }
 
       const { ticket, port } = await proxmox.createVncProxy(session.proxmox_node, session.proxmox_vmid);
       logger.info({ vmId: session.proxmox_vmid, port }, "got VNC proxy ticket");
@@ -173,9 +180,67 @@ export function createNoVncProxy() {
       // --- Browser → Server (Proxmox) ---
       let clientBuf = Buffer.alloc(0);
 
+      /**
+       * For spectators we parse RFB client messages and drop anything that
+       * would inject input (KeyEvent, PointerEvent, ClientCutText, QEMU
+       * extended key events). View-only in the browser is a courtesy; this
+       * is the enforcement.
+       */
+      let spectateBuf = Buffer.alloc(0);
+      function relayFiltered(raw: Buffer) {
+        spectateBuf = Buffer.concat([spectateBuf, raw]);
+        for (;;) {
+          if (spectateBuf.length < 1) return;
+          const type = spectateBuf[0];
+          let len: number;
+          let drop = false;
+          switch (type) {
+            case 0: len = 20; break;                       // SetPixelFormat
+            case 2: {                                      // SetEncodings
+              if (spectateBuf.length < 4) return;
+              len = 4 + 4 * spectateBuf.readUInt16BE(2);
+              break;
+            }
+            case 3: len = 10; break;                       // FramebufferUpdateRequest
+            case 4: len = 8; drop = true; break;           // KeyEvent
+            case 5: len = 6; drop = true; break;           // PointerEvent
+            case 6: {                                      // ClientCutText
+              if (spectateBuf.length < 8) return;
+              len = 8 + spectateBuf.readUInt32BE(4);
+              drop = true;
+              break;
+            }
+            case 150: len = 10; break;                     // EnableContinuousUpdates
+            case 248: {                                    // Fence
+              if (spectateBuf.length < 9) return;
+              len = 9 + spectateBuf[8];
+              break;
+            }
+            case 255: len = 12; drop = true; break;        // QEMU extended key event
+            default:
+              // Unknown message type: we can't know its length, and guessing
+              // would desync the stream. Terminate the spectator instead.
+              logger.warn({ type }, "spectator sent unknown RFB message, closing");
+              browserWs.close(1008, "Unsupported message in view-only mode");
+              proxmoxWs.close();
+              return;
+          }
+          if (spectateBuf.length < len) return;
+          const msg = spectateBuf.subarray(0, len);
+          spectateBuf = spectateBuf.subarray(len);
+          if (!drop && proxmoxWs.readyState === WebSocket.OPEN) {
+            proxmoxWs.send(msg, { binary: true });
+          }
+        }
+      }
+
       browserWs.on("message", (raw: Buffer) => {
         if (phase === Phase.TRANSPARENT) {
-          if (proxmoxWs.readyState === WebSocket.OPEN) proxmoxWs.send(raw, { binary: true });
+          if (spectator) {
+            relayFiltered(raw);
+          } else if (proxmoxWs.readyState === WebSocket.OPEN) {
+            proxmoxWs.send(raw, { binary: true });
+          }
           return;
         }
 
