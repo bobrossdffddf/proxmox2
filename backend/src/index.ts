@@ -36,7 +36,29 @@ import { refreshImportedTemplates } from "./services/importedTemplates";
 import { ensureAllStagedVms } from "./services/stagingMaintainer";
 import { parse as parseUrl } from "url";
 
+/**
+ * Node terminates the process on an unhandled rejection. With
+ * `restart: unless-stopped` that reads as the backend being fine — the
+ * container comes straight back and its log shows a clean startup, with no
+ * trace of what killed it. Log loudly and keep serving; a stray rejection from
+ * a background task is not a reason to drop every in-flight request.
+ */
+function installCrashHandlers() {
+  process.on("unhandledRejection", (reason) => {
+    logger.error(
+      { reason: reason instanceof Error ? reason.message : String(reason), stack: reason instanceof Error ? reason.stack : undefined },
+      "unhandled promise rejection — this would have killed the process"
+    );
+  });
+  process.on("uncaughtException", (err) => {
+    // Genuinely unsafe to continue from, but at least say why before going.
+    logger.error({ err: err.message, stack: err.stack }, "uncaught exception — exiting");
+    process.exit(1);
+  });
+}
+
 async function main() {
+  installCrashHandlers();
   logger.info({ env: env.NODE_ENV }, "starting backend");
 
   // 1. Configs (throws if YAMLs are invalid)
@@ -55,6 +77,31 @@ async function main() {
   app.use(helmet({ contentSecurityPolicy: false })); // CSP set on the nginx side
   app.use(cors());
   app.use(express.json({ limit: "256kb" }));
+
+  // One line per API request, plus a distinct line when a request dies without
+  // a response — the case where a browser shows nothing but "failed to fetch"
+  // and the server log is otherwise silent.
+  app.use((req, res, next) => {
+    if (!req.path.startsWith("/api/")) return next();
+    const started = Date.now();
+    let answered = false;
+    res.on("finish", () => {
+      answered = true;
+      logger.info(
+        { method: req.method, path: req.path, status: res.statusCode, ms: Date.now() - started },
+        "request"
+      );
+    });
+    res.on("close", () => {
+      if (!answered) {
+        logger.warn(
+          { method: req.method, path: req.path, ms: Date.now() - started },
+          "connection closed before a response was sent"
+        );
+      }
+    });
+    next();
+  });
 
   app.get("/healthz", (_req, res) => res.json({ ok: true }));
 

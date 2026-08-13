@@ -44,6 +44,15 @@ import {
 const router = Router();
 router.use(requireAuth, requireAdmin);
 
+/**
+ * Fire-and-forget a promise without risking the process. An unhandled rejection
+ * terminates Node, and the container's restart policy then makes it look like
+ * the backend was healthy all along.
+ */
+function detach(promise: Promise<unknown>): void {
+  promise.catch((err) => logger.warn({ err: String(err) }, "background upload task failed"));
+}
+
 async function importDir(): Promise<string> {
   await fs.promises.mkdir(env.IMPORT_DIR, { recursive: true });
   return env.IMPORT_DIR;
@@ -289,16 +298,16 @@ async function receiveBundle(req: Request, res: Response, record: store.ImportRo
 
       const progress = setInterval(() => {
         const percent = declared > 0 ? (received / declared) * 100 : 0;
-        void store.setUploadProgress(record.id, received, percent);
+        detach(store.setUploadProgress(record.id, received, percent));
         const bucket = Math.floor(percent / 5) * 5;
         if (declared > 0 && bucket > lastLoggedPercent) {
           lastLoggedPercent = bucket;
           const mbps = received / 1024 / 1024 / Math.max(1, (Date.now() - startedAt) / 1000);
-          void store.appendLog(
+          detach(store.appendLog(
             record.id,
             "info",
             `Received ${formatBytes(received)} of ${formatBytes(declared)} (${bucket}%, ${mbps.toFixed(1)} MB/s)`
-          );
+          ));
         }
       }, 5000);
 
