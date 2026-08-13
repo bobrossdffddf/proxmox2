@@ -30,6 +30,16 @@ import { buildOvf, rewriteOvfHrefs } from "./ovfBuilder";
 import * as store from "./store";
 import type { BundleFile, BundleInspection, ImportSettings, ImportStage } from "./types";
 
+/**
+ * Run a promise we deliberately don't await — progress writes, best-effort
+ * cleanup — without letting a rejection reach the process. An unhandled
+ * rejection terminates Node, and losing the whole backend because a progress
+ * row failed to update would be absurd.
+ */
+function detach(promise: Promise<unknown>): void {
+  promise.catch((err) => logger.warn({ err: String(err) }, "background import task failed"));
+}
+
 /** Per-bus device limits in Proxmox. */
 const BUS_LIMITS: Record<string, number> = { sata: 6, scsi: 31, ide: 4, virtio: 16 };
 
@@ -234,7 +244,7 @@ export async function runImport(importId: number): Promise<void> {
     if (!settings.keepUpload) {
       for (const volid of uploadedVolids) {
         await proxmox.deleteVolume(settings.node, volid).catch((err) => {
-          void run.say(`Could not remove the uploaded copy ${volid}: ${err}`, "warn");
+          detach(run.say(`Could not remove the uploaded copy ${volid}: ${err}`, "warn"));
         });
       }
       await fs.promises.rm(row.upload_path, { force: true }).catch(() => undefined);
@@ -268,7 +278,7 @@ export async function runImport(importId: number): Promise<void> {
       await proxmox
         .deleteVM(settings.node, createdVmid)
         .then((upid) => proxmox.waitForTask(settings.node, upid, 300_000))
-        .catch((cleanupErr) => void run.say(`Could not remove VM ${createdVmid}: ${cleanupErr}`, "warn"));
+        .catch((cleanupErr) => detach(run.say(`Could not remove VM ${createdVmid}: ${cleanupErr}`, "warn")));
     }
     for (const volid of uploadedVolids) {
       await proxmox.deleteVolume(settings.node, volid).catch(() => undefined);
@@ -325,7 +335,7 @@ export async function finalizeImport(importId: number): Promise<{ templateId: st
       if (settings.stagingPoolSize > 0) {
         await run.say(`Warming ${settings.stagingPoolSize} staged VM(s) for the new template`);
         await ensureAllStagedVms().catch((err) => {
-          void run.say(`Staging could not start yet: ${err}`, "warn");
+          detach(run.say(`Staging could not start yet: ${err}`, "warn"));
         });
       }
     }
@@ -497,8 +507,8 @@ async function transferArtifact(
         lastLogged = percent;
         // Transfer spans 10–50% of the overall bar, shared between artifacts.
         const share = 40 / artifactCount;
-        void store.setProgress(run.importId, 10 + index * share + (percent / 100) * share);
-        void store.appendLog(run.importId, "info", `Uploaded ${percent}% of ${artifact.filename}`);
+        detach(store.setProgress(run.importId, 10 + index * share + (percent / 100) * share));
+        detach(store.appendLog(run.importId, "info", `Uploaded ${percent}% of ${artifact.filename}`));
       }
     },
   });
@@ -628,8 +638,8 @@ async function createVm(
       const minutes = Math.floor(elapsed / 60_000);
       if (minutes >= lastNote + 5) {
         lastNote = minutes;
-        void store.appendLog(run.importId, "info", `Still converting disks… ${minutes} minutes elapsed`);
-        void store.setProgress(run.importId, Math.min(85, 55 + (elapsed / timeoutMs) * 30));
+        detach(store.appendLog(run.importId, "info", `Still converting disks… ${minutes} minutes elapsed`));
+        detach(store.setProgress(run.importId, Math.min(85, 55 + (elapsed / timeoutMs) * 30)));
       }
     },
   });
@@ -645,7 +655,7 @@ async function configureVm(run: Run, settings: ImportSettings, vmid: number): Pr
     tablet: 1,
   };
   await proxmox.updateVmConfig(settings.node, vmid, extras).catch((err) => {
-    void run.say(`Could not apply optional VM settings: ${err}`, "warn");
+    detach(run.say(`Could not apply optional VM settings: ${err}`, "warn"));
   });
 
   if (settings.startAfterImport) {
@@ -653,7 +663,7 @@ async function configureVm(run: Run, settings: ImportSettings, vmid: number): Pr
     await proxmox
       .powerOn(settings.node, vmid)
       .then((upid) => proxmox.waitForTask(settings.node, upid, 120_000))
-      .catch((err) => void run.say(`Could not start the VM: ${err}`, "warn"));
+      .catch((err) => detach(run.say(`Could not start the VM: ${err}`, "warn")));
   }
 }
 
