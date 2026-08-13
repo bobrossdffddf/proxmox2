@@ -39,6 +39,7 @@ import {
   STREAM_CHUNK,
   TarInput,
 } from "../archive";
+import { registerPullArtifact, releasePullArtifact } from "./artifactServer";
 import { buildOvf, rewriteOvfHrefs } from "./ovfBuilder";
 import * as store from "./store";
 import type { BundleFile, BundleInspection, ImportSettings, ImportStage } from "./types";
@@ -522,6 +523,83 @@ async function assertRoomOnNode(run: Run, settings: ImportSettings, totalBytes: 
   }
 }
 
+/**
+ * Where a Proxmox node should come to fetch an artifact from us.
+ *
+ * The backend runs in a container, so its own socket address is a Docker
+ * bridge IP the node can't route to. PUBLIC_URL is the address the outside
+ * world already uses for this machine, so its host plus the published backend
+ * port is the reliable derivation — and IMPORT_PULL_URL_BASE overrides it for
+ * anything unusual.
+ */
+function pullBaseUrl(): string | null {
+  if (env.IMPORT_PULL_URL_BASE) return env.IMPORT_PULL_URL_BASE.replace(/\/+$/, "");
+  try {
+    const host = new URL(env.PUBLIC_URL).hostname;
+    if (!host || host === "localhost" || host === "127.0.0.1") return null;
+    return `http://${host}:${env.BACKEND_PORT}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Have the node fetch the image from us instead of pushing it into pveproxy.
+ *
+ * pveproxy stages an upload in a temporary file before moving it into the
+ * storage, and that staging area is often far smaller than a VM image — on
+ * many installs it's a tmpfs sized from RAM. A push then dies partway with
+ * nothing but EPIPE. `download-url` writes straight into the target storage,
+ * so nothing is staged and the size ceiling disappears.
+ */
+async function transferByPull(run: Run, settings: ImportSettings, artifact: Artifact): Promise<string> {
+  const base = pullBaseUrl();
+  if (!base) {
+    throw new Error(
+      "Cannot use the pull transfer: no address for this backend that the node could reach. " +
+        "Set IMPORT_PULL_URL_BASE (e.g. http://192.168.1.10:3000) in .env and restart the backend."
+    );
+  }
+
+  const token = registerPullArtifact({
+    importId: run.importId,
+    filename: artifact.filename,
+    size: artifact.bytes,
+    open: artifact.open,
+  });
+  const url = `${base}/api/import-pull/${token}`;
+
+  try {
+    await run.say(`Asking ${settings.node} to fetch the image from ${base} instead`);
+    const upid = await proxmox.downloadUrlToStorage({
+      node: settings.node,
+      storage: settings.importStorage,
+      content: "import",
+      url,
+      filename: artifact.filename,
+      verifyCertificates: false,
+    });
+
+    let lastNote = 0;
+    await proxmox.waitForLongTask(settings.node, upid, {
+      timeoutMs: env.IMPORT_TASK_TIMEOUT_MINUTES * 60 * 1000,
+      pollMs: 10_000,
+      onProgress: (elapsed) => {
+        const minutes = Math.floor(elapsed / 60_000);
+        if (minutes >= lastNote + 2) {
+          lastNote = minutes;
+          detach(store.appendLog(run.importId, "info", `Node is still downloading… ${minutes} minutes elapsed`));
+        }
+      },
+    });
+
+    await run.say(`${artifact.filename} is on ${settings.importStorage}`);
+    return `${settings.importStorage}:import/${artifact.filename}`;
+  } finally {
+    releasePullArtifact(token);
+  }
+}
+
 async function transferArtifact(
   run: Run,
   settings: ImportSettings,
@@ -562,6 +640,25 @@ async function transferArtifact(
       .deleteVolume(settings.node, partial)
       .then(() => run.say(`Removed the partial upload ${partial}`, "warn"))
       .catch(() => undefined);
+
+    // A push that dies partway is usually pveproxy's staging area filling up,
+    // not the storage. Having the node pull instead skips that staging
+    // entirely, so it's worth one automatic attempt before giving up.
+    const hungUp = /EPIPE|ECONNRESET|socket hang up|aborted/i.test(
+      err instanceof Error ? err.message : String(err)
+    );
+    if (hungUp && pullBaseUrl()) {
+      await run.say(explanation, "warn");
+      await run.say("Retrying with the node pulling the image instead of us pushing it");
+      try {
+        return await transferByPull(run, settings, artifact);
+      } catch (pullErr) {
+        throw new Error(
+          `${explanation}\n\nThe pull transfer also failed: ` +
+            `${pullErr instanceof Error ? pullErr.message : String(pullErr)}`
+        );
+      }
+    }
 
     throw new Error(explanation);
   }

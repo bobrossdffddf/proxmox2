@@ -73,6 +73,7 @@ services:
       IMPORT_VMID_RANGE_START: ${IMPORT_VMID_RANGE_START:-9000}
       IMPORT_VMID_RANGE_END: ${IMPORT_VMID_RANGE_END:-9899}
       IMPORT_TASK_TIMEOUT_MINUTES: ${IMPORT_TASK_TIMEOUT_MINUTES:-240}
+      IMPORT_PULL_URL_BASE: ${IMPORT_PULL_URL_BASE:-}
     volumes:
       - ./config:/app/config:ro
       # Uploaded VM bundles land here. The OVA is streamed to Proxmox as it's

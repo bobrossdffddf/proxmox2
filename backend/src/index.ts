@@ -25,6 +25,7 @@ import adminRouter from "./routes/admin";
 import rdpRouter from "./routes/rdp";
 import announcementsRouter from "./routes/announcements";
 import importsRouter from "./routes/imports";
+import { pullRouter } from "./services/vmImport/artifactServer";
 
 import { createRdpProxy } from "./rdp/proxy";
 import { createNoVncProxy } from "./rdp/novnc";
@@ -108,6 +109,10 @@ async function main() {
   app.use("/api/auth", authRouter);
   app.use("/api/templates", templatesRouter);
   app.use("/api/vm", vmRouter);
+  // Token-authenticated rather than JWT-authenticated: this is fetched by a
+  // Proxmox node, which has no session. See services/vmImport/artifactServer.ts.
+  app.use("/api/import-pull", pullRouter);
+
   // Mounted before the admin router so /api/admin/imports/* isn't shadowed by
   // any admin route pattern.
   app.use("/api/admin/imports", importsRouter);

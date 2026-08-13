@@ -64,6 +64,27 @@ an upload that wouldn't fit is refused before it starts.
 
 `IMPORT_MAX_UPLOAD_GB` (default 128) caps a single upload.
 
+## How the image reaches the node
+
+By default the backend pushes the assembled OVA into Proxmox's upload endpoint.
+That works, but pveproxy stages an upload in a temporary file before moving it
+into the storage — and on many installs that staging area is a tmpfs sized from
+RAM, so a push can die partway with nothing but `write EPIPE` even though the
+target storage has plenty of room.
+
+If a push fails that way, the import **automatically retries with the node
+pulling instead**: it publishes the OVA on a single-use URL and calls Proxmox's
+`download-url`, which writes straight into the storage and stages nothing.
+
+For that the node needs an address it can reach the backend on. It's derived
+from `PUBLIC_URL`'s host plus `BACKEND_PORT`, which is correct whenever the
+backend port is published on the same machine. Set `IMPORT_PULL_URL_BASE`
+explicitly if not — for example `http://192.168.1.10:3000`.
+
+If you'd rather not have pushes fail first, check `df -h /tmp` and `df -h
+/var/tmp` on the node; a staging area smaller than your images is the thing to
+fix.
+
 ## Guest preparation — the step that isn't automated
 
 When the disks are converted, the import **stops** and waits for you.
@@ -151,6 +172,8 @@ docker compose logs -f backend
 | Clones hang at "waiting for guest IP" | The guest agent isn't installed or isn't running. Go back into the template and finish guest prep. |
 | `No data received for N minutes` | The upload stalled. See the table above; `IMPORT_UPLOAD_STALL_MINUTES` controls how long it waits before giving up. |
 | `Ran out of disk space in /app/uploads` | The `import-uploads` volume filled while receiving the upload. It needs a little more than the bundle's own size. |
+| `<node> closed the connection after N of M (write EPIPE)` | pveproxy's staging area is smaller than the image. The import retries by having the node pull instead; if that can't run, set `IMPORT_PULL_URL_BASE`. |
+| `Cannot use the pull transfer: no address for this backend` | `PUBLIC_URL` is localhost, so nothing can be derived. Set `IMPORT_PULL_URL_BASE`. |
 
 A failed import cleans up after itself — the half-created VM and the uploaded
 copy are both removed — so you can fix the setting and press **Retry import**
