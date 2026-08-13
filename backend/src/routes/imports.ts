@@ -42,11 +42,31 @@ import {
 const router = Router();
 router.use(requireAuth, requireAdmin);
 
-const UPLOAD_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
-
 async function importDir(): Promise<string> {
   await fs.promises.mkdir(env.IMPORT_DIR, { recursive: true });
   return env.IMPORT_DIR;
+}
+
+/**
+ * Reduce a real-world export name to something safe to put on disk.
+ * "CyberPatriot Win11 (final).zip" is a perfectly normal thing to be handed.
+ */
+function sanitizeUploadName(name: string): string {
+  const cleaned = path
+    .basename(name)
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^[^A-Za-z0-9]+/, "");
+  return (cleaned || "upload.zip").slice(0, 200);
+}
+
+/** Free bytes in the staging area, or null where statfs isn't available. */
+async function freeStagingBytes(): Promise<number | null> {
+  try {
+    const stats = await fs.promises.statfs(await importDir());
+    return Number(stats.bavail) * Number(stats.bsize);
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -64,13 +84,7 @@ router.get("/capabilities", async (_req, res) => {
     nodes.push(await probeNode(node.name));
   }
 
-  let freeBytes: number | null = null;
-  try {
-    const stats = await fs.promises.statfs(await importDir());
-    freeBytes = Number(stats.bavail) * Number(stats.bsize);
-  } catch {
-    // statfs is unavailable on some filesystems; the number is advisory only.
-  }
+  const freeBytes = await freeStagingBytes();
 
   res.json({
     nodes,
@@ -89,53 +103,193 @@ router.get("/capabilities", async (_req, res) => {
 // ---------------------------------------------------------------------------
 
 /**
- * Stream an uploaded bundle to disk, then inspect it.
+ * Reserve an import before sending any bytes.
  *
- * The body is the file itself; the name comes in as `?filename=`. Everything
- * is written before anything is parsed, so a truncated upload fails here rather
- * than halfway through an import.
+ * This exists so the record — and therefore its log — is addressable *during*
+ * the upload. Creating it inside the upload request instead meant the browser
+ * only learned the id from the success response, so anything that went wrong
+ * mid-upload was written to a log nobody could fetch.
+ *
+ * It's also the right place to refuse an upload that can't possibly fit.
  */
-router.post("/upload", async (req, res) => {
-  const filename = String(req.query.filename ?? "").trim();
-  if (!UPLOAD_NAME.test(filename)) {
-    throw new HttpError(400, "filename must be a plain file name (letters, digits, dot, dash, underscore)");
-  }
+router.post("/", async (req, res) => {
+  const filename = sanitizeUploadName(String(req.body?.filename ?? "").trim());
+  const sizeBytes = Number(req.body?.sizeBytes ?? 0);
+
   if (!/\.(zip|ova|ovf|vmdk|qcow2|raw|img|tar)$/i.test(filename)) {
     throw new HttpError(400, `Unsupported file type "${path.extname(filename)}". Upload a .zip, .ova, or a disk image.`);
   }
 
+  const maxBytes = env.IMPORT_MAX_UPLOAD_GB * 1024 ** 3;
+  if (sizeBytes > maxBytes) {
+    throw new HttpError(
+      413,
+      `${formatBytes(sizeBytes)} is over the ${env.IMPORT_MAX_UPLOAD_GB} GB upload limit. ` +
+        `Raise IMPORT_MAX_UPLOAD_GB in .env and restart the backend.`
+    );
+  }
+
+  // The bundle is written once and then repackaged alongside itself, so the
+  // staging area needs roughly twice its size. Running out mid-write is one of
+  // the few ways an upload can die silently, so it's checked up front.
+  const free = await freeStagingBytes();
+  if (free !== null && sizeBytes > 0 && free < sizeBytes * 2) {
+    throw new HttpError(
+      507,
+      `Not enough room in ${env.IMPORT_DIR}: ${formatBytes(free)} free, and a ${formatBytes(sizeBytes)} ` +
+        `bundle needs about ${formatBytes(sizeBytes * 2)} to unpack and repackage. ` +
+        `Free space on the Docker volume, or point IMPORT_DIR at a bigger disk.`
+    );
+  }
+
   const auth = (req as unknown as AuthedRequest).auth;
   const record = await store.createImport({ originalFilename: filename, createdBy: auth.sub });
-  const dest = path.join(await importDir(), `${record.public_id}-${filename}`);
+  await store.setUploadProgress(record.id, 0, 0);
+  await store.appendLog(
+    record.id,
+    "info",
+    `Ready to receive ${filename}${sizeBytes > 0 ? ` (${formatBytes(sizeBytes)})` : ""}` +
+      `${free !== null ? `, ${formatBytes(free)} free in ${env.IMPORT_DIR}` : ""}`
+  );
 
+  res.status(201).json({ import: view((await store.getImport(record.id))!) });
+});
+
+/**
+ * Stream the bundle to disk, then inspect it.
+ *
+ * The body is the file itself — one file per request, so there's nothing a
+ * multipart parser would buy us. Notable behaviour:
+ *
+ *   - Progress is written to the record every few seconds, so the wizard can
+ *     show server-side receipt alongside the browser's own upload counter.
+ *     When those two disagree, the upload is stuck in between.
+ *   - A stall watchdog fails the request if bytes stop arriving. Node's own
+ *     5-minute `requestTimeout` is disabled for exactly this route's sake (see
+ *     index.ts) and this replaces it with something a slow 40 GB upload won't
+ *     trip.
+ *   - On failure the response is sent *before* the socket is torn down, so the
+ *     browser gets the reason instead of a dead connection.
+ */
+router.put("/:publicId/upload", async (req, res) => {
+  // Rejecting before the body arrives has the same hazard as failing during it:
+  // throwing to the error middleware sends a response the browser won't read
+  // until it finishes uploading. Answer and hang up instead.
+  const rejectEarly = (status: number, message: string) => {
+    if (!res.headersSent) res.status(status).json({ error: message });
+    req.unpipe();
+    req.destroy();
+  };
+
+  const record = await store.getImportByPublicId(req.params.publicId);
+  if (!record) return rejectEarly(404, "import not found");
+  if (record.status !== "uploading") {
+    return rejectEarly(409, `import is ${record.status}; it is not waiting for an upload`);
+  }
+
+  const filename = record.original_filename;
+  const dest = path.join(await importDir(), `${record.public_id}-${filename}`);
+  const declared = Number(req.headers["content-length"] ?? 0);
   const maxBytes = env.IMPORT_MAX_UPLOAD_GB * 1024 ** 3;
+  const stallMs = Math.max(1, env.IMPORT_UPLOAD_STALL_MINUTES) * 60_000;
+
   let received = 0;
-  let aborted: string | null = null;
+  let failure: string | null = null;
+  const startedAt = Date.now();
+
+  await store.appendLog(record.id, "info", `Upload started${declared ? ` — expecting ${formatBytes(declared)}` : ""}`);
 
   try {
     await new Promise<void>((resolve, reject) => {
       const sink = fs.createWriteStream(dest);
+      let lastChunkAt = Date.now();
+      let lastLoggedPercent = -1;
+
+      const fail = (message: string) => {
+        if (failure) return;
+        failure = message;
+        reject(new Error(message));
+      };
+
+      // Inactivity, not total duration — a legitimate upload can run for hours.
+      const watchdog = setInterval(() => {
+        if (Date.now() - lastChunkAt > stallMs) {
+          fail(
+            `No data received for ${env.IMPORT_UPLOAD_STALL_MINUTES} minutes after ${formatBytes(received)}. ` +
+              `The connection stalled — check for a proxy in front of the app with its own body-size or timeout limit.`
+          );
+        }
+      }, 15_000);
+
+      const progress = setInterval(() => {
+        const percent = declared > 0 ? (received / declared) * 100 : 0;
+        void store.setUploadProgress(record.id, received, percent);
+        const bucket = Math.floor(percent / 5) * 5;
+        if (declared > 0 && bucket > lastLoggedPercent) {
+          lastLoggedPercent = bucket;
+          const mbps = received / 1024 / 1024 / Math.max(1, (Date.now() - startedAt) / 1000);
+          void store.appendLog(
+            record.id,
+            "info",
+            `Received ${formatBytes(received)} of ${formatBytes(declared)} (${bucket}%, ${mbps.toFixed(1)} MB/s)`
+          );
+        }
+      }, 5000);
+
+      const done = () => {
+        clearInterval(watchdog);
+        clearInterval(progress);
+      };
 
       req.on("data", (chunk: Buffer) => {
+        lastChunkAt = Date.now();
         received += chunk.length;
         if (received > maxBytes) {
-          aborted = `Upload exceeded the ${env.IMPORT_MAX_UPLOAD_GB} GB limit (IMPORT_MAX_UPLOAD_GB)`;
-          req.destroy();
+          fail(`Upload exceeded the ${env.IMPORT_MAX_UPLOAD_GB} GB limit (IMPORT_MAX_UPLOAD_GB)`);
         }
       });
       // A dropped connection must not leave a truncated file looking complete.
-      req.on("aborted", () => reject(new Error(aborted ?? "Upload aborted by the client")));
-      req.on("error", (err) => reject(aborted ? new Error(aborted) : err));
-      sink.on("error", reject);
-      sink.on("finish", () => resolve());
+      req.on("aborted", () => {
+        done();
+        fail(`The browser stopped sending after ${formatBytes(received)}. The upload was not completed.`);
+      });
+      req.on("error", (err) => {
+        done();
+        fail(failure ?? `Connection error after ${formatBytes(received)}: ${err.message}`);
+      });
+      sink.on("error", (err) => {
+        done();
+        const detail = /ENOSPC/.test(err.message)
+          ? `Ran out of disk space in ${env.IMPORT_DIR} after writing ${formatBytes(received)}.`
+          : `Could not write to ${env.IMPORT_DIR} after ${formatBytes(received)}: ${err.message}`;
+        fail(detail);
+      });
+      sink.on("finish", () => {
+        done();
+        resolve();
+      });
       req.pipe(sink);
     });
 
     if (received === 0) throw new HttpError(400, "Upload was empty");
+    if (declared > 0 && received !== declared) {
+      throw new HttpError(
+        400,
+        `Truncated upload: expected ${formatBytes(declared)} but received ${formatBytes(received)}.`
+      );
+    }
 
+    const seconds = Math.max(1, (Date.now() - startedAt) / 1000);
     await store.setUploadResult(record.id, dest, received);
-    await store.appendLog(record.id, "info", `Received ${filename} (${formatBytes(received)})`);
+    await store.appendLog(
+      record.id,
+      "info",
+      `Received ${filename} — ${formatBytes(received)} in ${Math.round(seconds)}s ` +
+        `(${(received / 1024 / 1024 / seconds).toFixed(1)} MB/s)`
+    );
 
+    await store.setStatus(record.id, "inspecting");
+    await store.appendLog(record.id, "info", "Reading the bundle…");
     const inspection = await inspectBundle(dest, filename);
     await store.setInspection(record.id, inspection);
     for (const warning of inspection.warnings) {
@@ -160,13 +314,19 @@ router.post("/upload", async (req, res) => {
     res.status(201).json({ import: view(fresh!), suggested });
   } catch (err) {
     await fs.promises.rm(dest, { force: true }).catch(() => undefined);
-    const message = aborted ?? (err instanceof Error ? err.message : String(err));
+    const message = failure ?? (err instanceof Error ? err.message : String(err));
     await store.appendLog(record.id, "error", message).catch(() => undefined);
     await store.markFailed(record.id, message).catch(() => undefined);
-    logger.warn({ importId: record.id, err: message }, "upload/inspection failed");
+    logger.warn({ importId: record.id, received, err: message }, "upload/inspection failed");
 
-    if (err instanceof HttpError) throw err;
-    throw new HttpError(400, message);
+    // Answer first, then hang up. Throwing to the error middleware while the
+    // browser is still sending a body means the response never lands and the
+    // progress bar just stops — which is exactly the failure this replaces.
+    if (!res.headersSent) {
+      res.status(err instanceof HttpError ? err.status : 400).json({ error: message });
+    }
+    req.unpipe();
+    req.destroy();
   }
 });
 

@@ -81,6 +81,17 @@ async function main() {
   // 5. HTTP + WS
   const server = http.createServer(app);
 
+  // Node 18+ aborts any request whose *body* takes longer than 5 minutes to
+  // arrive (requestTimeout). A multi-gigabyte VM upload exceeds that as a
+  // matter of course, and the socket dies mid-transfer with the browser's
+  // progress bar simply stopping. Disable the blanket limit; the upload route
+  // enforces an inactivity watchdog instead, which is the thing we actually
+  // care about. headersTimeout still guards against a client that connects and
+  // says nothing.
+  server.requestTimeout = 0;
+  server.headersTimeout = 120_000;
+  server.keepAliveTimeout = 65_000;
+
   // Create guacamole-lite with the real server so it doesn't crash.
   // It registers its own upgrade handler for /ws/rdp internally.
   const guacServer = createRdpProxy(server);

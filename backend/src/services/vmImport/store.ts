@@ -77,7 +77,21 @@ export async function listImports(limit = 25): Promise<ImportRow[]> {
 /** Imports that were mid-flight when the backend restarted. */
 export async function listUnfinishedImports(): Promise<ImportRow[]> {
   return many<ImportRow>(
-    `SELECT ${COLUMNS} FROM vm_imports WHERE status IN ('queued','running') ORDER BY created_at`
+    `SELECT ${COLUMNS} FROM vm_imports WHERE status IN ('uploading','queued','running') ORDER BY created_at`
+  );
+}
+
+/**
+ * Progress of the browser → backend upload. Written straight to the row (not
+ * the log) because it ticks every few seconds and would otherwise bury
+ * everything else.
+ */
+export async function setUploadProgress(id: number, received: number, percent: number): Promise<void> {
+  await query(
+    `UPDATE vm_imports
+     SET upload_bytes=$2, progress=$3, status='uploading', stage='upload', updated_at=NOW()
+     WHERE id=$1`,
+    [id, received, Math.max(0, Math.min(100, Math.round(percent)))]
   );
 }
 

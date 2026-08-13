@@ -40,11 +40,12 @@ export function startImportWorker(): Worker<ImportJobData> {
 export async function failInterruptedImports(): Promise<void> {
   const stuck = await store.listUnfinishedImports();
   for (const row of stuck) {
-    await store.appendLog(row.id, "error", "The backend restarted while this import was running.");
-    await store.markFailed(
-      row.id,
-      "Interrupted by a backend restart. Check the target node for a partially created VM before retrying."
-    );
-    logger.warn({ importId: row.id }, "marked interrupted import as failed");
+    const reason =
+      row.status === "uploading"
+        ? "Interrupted by a backend restart while the file was still uploading. Upload it again."
+        : "Interrupted by a backend restart. Check the target node for a partially created VM before retrying.";
+    await store.appendLog(row.id, "error", "The backend restarted while this import was in progress.");
+    await store.markFailed(row.id, reason);
+    logger.warn({ importId: row.id, status: row.status }, "marked interrupted import as failed");
   }
 }

@@ -117,7 +117,31 @@ Proxmox template VM stays where it is.
 ## When something goes wrong
 
 The import log on the tab is the whole story, including whatever Proxmox said in
-its own task log. Common ones:
+its own task log. It starts recording the moment you drop a file, so a failure
+during the upload shows up there too.
+
+### The upload stops partway
+
+The upload panel shows two counters: **sent** (what your browser handed to the
+network) and **server received** (what the backend has written to disk). Which
+one stopped tells you where the problem is:
+
+| Symptom | Cause |
+| --- | --- |
+| Both stop together | The connection dropped, or the browser tab lost focus on a flaky network. The log will show the stall. |
+| **sent** climbs, **server received** doesn't | Something between the browser and the backend is eating the body — almost always a reverse proxy in front of the app (Cloudflare, another nginx, Traefik) with its own body-size or timeout limit. The bundled nginx is already configured for this; anything you put in front of it needs the same treatment. |
+| Neither ever starts, instant error | The bundle is over `IMPORT_MAX_UPLOAD_GB`, or there isn't room in `IMPORT_DIR`. Both are checked before a byte is sent, and the error says which. |
+
+If nothing on the page explains it, the backend's own log will:
+
+```bash
+docker compose logs -f backend
+```
+
+### Common failures
+
+| Message | Cause |
+| --- | --- |
 
 | Message | Cause |
 | --- | --- |
@@ -126,6 +150,8 @@ its own task log. Common ones:
 | `Proxmox task failed: … no such volume` | The landing storage is node-local and you picked a different node. Pick the node that owns the storage. |
 | Import stuck on "Still converting disks…" | Normal for a large image. Raise `IMPORT_TASK_TIMEOUT_MINUTES` if it genuinely needs longer than 4 hours. |
 | Clones hang at "waiting for guest IP" | The guest agent isn't installed or isn't running. Go back into the template and finish guest prep. |
+| `No data received for N minutes` | The upload stalled. See the table above; `IMPORT_UPLOAD_STALL_MINUTES` controls how long it waits before giving up. |
+| `Ran out of disk space in /app/uploads` | The `import-uploads` volume filled. Budget about twice the bundle size. |
 
 A failed import cleans up after itself — the half-created VM and the uploaded
 copy are both removed — so you can fix the setting and press **Retry import**

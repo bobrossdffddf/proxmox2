@@ -1466,7 +1466,25 @@ h1 {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
-.import-dropzone.uploading { border-style: solid; }
+.import-dropzone.uploading { border-style: solid; align-items: stretch; text-align: left; }
+.import-dropzone.uploading .name { text-align: center; }
+.import-dropzone.uploading > button { align-self: center; }
+
+/* Two counters side by side: what the browser sent, what the server got. */
+.import-upload-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+}
+.import-upload-stats > span { display: flex; flex-direction: column; gap: 2px; }
+.import-upload-stats strong {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.import-upload-log { margin-top: 4px; }
+.import-upload-log .import-log { max-height: 180px; }
 .import-dropzone .name { font-weight: 600; font-size: 15px; font-family: var(--font-display); }
 .import-dropzone p { margin: 0; color: var(--text-2); max-width: 62ch; font-size: 13px; }
 
