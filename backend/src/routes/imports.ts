@@ -176,16 +176,17 @@ router.post("/", async (req, res) => {
     );
   }
 
-  // The bundle is written once and then repackaged alongside itself, so the
-  // staging area needs roughly twice its size. Running out mid-write is one of
-  // the few ways an upload can die silently, so it's checked up front.
+  // Only the uploaded bundle itself lands here — the OVA is assembled as it
+  // streams to Proxmox, never written down — so the requirement is the file
+  // plus a little headroom.
   const free = await freeStagingBytes();
-  if (free !== null && sizeBytes > 0 && free < sizeBytes * 2) {
+  const needed = Math.ceil(sizeBytes * 1.1);
+  if (free !== null && sizeBytes > 0 && free < needed) {
     throw new HttpError(
       507,
-      `Not enough room in ${env.IMPORT_DIR}: ${formatBytes(free)} free, and a ${formatBytes(sizeBytes)} ` +
-        `bundle needs about ${formatBytes(sizeBytes * 2)} to unpack and repackage. ` +
-        `Free space on the Docker volume, or point IMPORT_DIR at a bigger disk.`
+      `Not enough room in ${env.IMPORT_DIR}: ${formatBytes(free)} free, and ${formatBytes(sizeBytes)} ` +
+        `needs about ${formatBytes(needed)}. Free space on the Docker volume, or point IMPORT_DIR ` +
+        `at a bigger disk.`
     );
   }
 

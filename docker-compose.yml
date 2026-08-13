@@ -75,8 +75,8 @@ services:
       IMPORT_TASK_TIMEOUT_MINUTES: ${IMPORT_TASK_TIMEOUT_MINUTES:-240}
     volumes:
       - ./config:/app/config:ro
-      # Uploaded VM bundles are staged here and repackaged in place. Needs room
-      # for the largest image you'll import, roughly twice over.
+      # Uploaded VM bundles land here. The OVA is streamed to Proxmox as it's
+      # assembled, so this only needs room for the bundle itself.
       - import-uploads:/app/uploads
     ports:
       - "${BACKEND_PORT}:3000"

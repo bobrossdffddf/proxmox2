@@ -17,6 +17,7 @@
 import fs from "fs";
 import path from "path";
 import zlib from "zlib";
+import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 
 export interface ArchiveEntry {
@@ -298,6 +299,45 @@ export async function readEntryHead(
   });
 }
 
+/**
+ * A readable of one entry's decompressed contents.
+ *
+ * This is what lets the importer avoid touching scratch disk at all: an entry
+ * can be piped from inside the uploaded archive straight into the OVA being
+ * sent to Proxmox, with nothing landing in between.
+ */
+export async function openEntry(
+  filePath: string,
+  kind: ArchiveKind,
+  entry: ArchiveEntry
+): Promise<Readable> {
+  if (kind === "tar") {
+    return fs.createReadStream(filePath, {
+      start: entry.headerOffset,
+      end: entry.headerOffset + entry.size - 1,
+      highWaterMark: 4 * 1024 * 1024,
+    });
+  }
+
+  const start = await zipDataOffset(filePath, entry);
+  const source = fs.createReadStream(filePath, {
+    start,
+    end: start + entry.compressedSize - 1,
+    highWaterMark: 4 * 1024 * 1024,
+  });
+
+  if (entry.method === 0) return source;
+  if (entry.method === 8) {
+    const inflate = zlib.createInflateRaw();
+    // pipeline() propagates errors and cleans both ends up on failure.
+    void pipeline(source, inflate).catch(() => undefined);
+    return inflate;
+  }
+
+  source.destroy();
+  throw new Error(`Unsupported ZIP compression method ${entry.method} for ${entry.name}`);
+}
+
 /** Stream an entry out to a file on disk. Safe for multi-gigabyte disks. */
 export async function extractEntry(
   filePath: string,
@@ -306,34 +346,7 @@ export async function extractEntry(
   destPath: string
 ): Promise<void> {
   await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
-
-  if (kind === "tar") {
-    await pipeline(
-      fs.createReadStream(filePath, {
-        start: entry.headerOffset,
-        end: entry.headerOffset + entry.size - 1,
-      }),
-      fs.createWriteStream(destPath)
-    );
-    return;
-  }
-
-  const start = await zipDataOffset(filePath, entry);
-  const source = fs.createReadStream(filePath, {
-    start,
-    end: start + entry.compressedSize - 1,
-  });
-  const sink = fs.createWriteStream(destPath);
-
-  if (entry.method === 0) {
-    await pipeline(source, sink);
-  } else if (entry.method === 8) {
-    await pipeline(source, zlib.createInflateRaw(), sink);
-  } else {
-    source.destroy();
-    sink.destroy();
-    throw new Error(`Unsupported ZIP compression method ${entry.method} for ${entry.name}`);
-  }
+  await pipeline(await openEntry(filePath, kind, entry), fs.createWriteStream(destPath));
 }
 
 // ---------------------------------------------------------------------------
@@ -343,45 +356,85 @@ export async function extractEntry(
 export interface TarInput {
   /** Name to store in the archive. Kept short and flat — no directories. */
   name: string;
-  /** File on disk to stream in. */
-  sourcePath: string;
+  /** Exact byte length of the member. Required: tar headers precede the data. */
+  size: number;
+  /** Opens the member's contents. Called once, when the member is reached. */
+  open: () => Readable | Promise<Readable>;
 }
 
 /**
- * Write a ustar archive. Members are streamed, so this can build an OVA out of
- * disks far larger than memory. Entry order is preserved, which matters: the
- * OVF descriptor must come first for Proxmox to find it cheaply.
+ * Exact size of the archive `tarStream` would produce, without producing it.
+ *
+ * tar is a fixed-overhead format — a 512-byte header per member, contents
+ * padded to 512, and two zero blocks at the end — so the total is known up
+ * front. That's what makes it possible to stream an OVA straight into an HTTP
+ * upload that demands a Content-Length, instead of building the file on disk
+ * first just to measure it.
  */
-export async function writeTar(destPath: string, inputs: TarInput[]): Promise<void> {
-  const out = fs.createWriteStream(destPath);
-  const write = (chunk: Buffer) =>
-    new Promise<void>((resolve, reject) => {
-      out.write(chunk, (err) => (err ? reject(err) : resolve()));
-    });
-
-  try {
-    for (const input of inputs) {
-      const stat = await fs.promises.stat(input.sourcePath);
-      if (Buffer.byteLength(input.name, "utf8") > 99) {
-        throw new Error(`Archive member name too long for ustar: ${input.name}`);
-      }
-      await write(tarHeader(input.name, stat.size));
-
-      // Copied by hand rather than with pipeline(): piping many sources into
-      // one destination stacks a fresh set of listeners on it per member, and
-      // an OVA can have a dozen. Awaiting each write gives the same backpressure.
-      for await (const chunk of fs.createReadStream(input.sourcePath, { highWaterMark: 4 * 1024 * 1024 })) {
-        await write(chunk as Buffer);
-      }
-
-      const remainder = stat.size % 512;
-      if (remainder !== 0) await write(Buffer.alloc(512 - remainder));
-    }
-    // Two zero blocks terminate the archive.
-    await write(Buffer.alloc(1024));
-  } finally {
-    await new Promise<void>((resolve) => out.end(resolve));
+export function tarSize(inputs: Array<{ size: number }>): number {
+  let total = 0;
+  for (const input of inputs) {
+    total += 512 + Math.ceil(input.size / 512) * 512;
   }
+  return total + 1024;
+}
+
+/**
+ * A ustar archive as a stream. Members are pulled in one at a time and never
+ * buffered, so this builds an OVA out of disks far larger than memory *and*
+ * larger than free disk. Entry order is preserved, which matters: the OVF
+ * descriptor must come first for Proxmox to find it cheaply.
+ */
+export function tarStream(inputs: TarInput[]): Readable {
+  return Readable.from(
+    (async function* () {
+      for (const input of inputs) {
+        if (Buffer.byteLength(input.name, "utf8") > 99) {
+          throw new Error(`Archive member name too long for ustar: ${input.name}`);
+        }
+        yield tarHeader(input.name, input.size);
+
+        let written = 0;
+        const source = await input.open();
+        for await (const chunk of source) {
+          written += (chunk as Buffer).length;
+          yield chunk as Buffer;
+        }
+
+        // A short member would silently corrupt every following header, since
+        // the reader locates them purely by offset.
+        if (written !== input.size) {
+          throw new Error(
+            `Archive member ${input.name} was ${written} bytes, expected ${input.size} — the source archive is truncated or corrupt`
+          );
+        }
+
+        const remainder = input.size % 512;
+        if (remainder !== 0) yield Buffer.alloc(512 - remainder);
+      }
+      // Two zero blocks terminate the archive.
+      yield Buffer.alloc(1024);
+    })()
+  );
+}
+
+/** Write a ustar archive to disk. Thin wrapper over `tarStream`. */
+export async function writeTar(destPath: string, inputs: TarInput[]): Promise<void> {
+  await pipeline(tarStream(inputs), fs.createWriteStream(destPath));
+}
+
+/** Convenience source for a member already in memory (the OVF descriptor). */
+export function bufferSource(name: string, contents: Buffer): TarInput {
+  return { name, size: contents.length, open: () => Readable.from([contents]) };
+}
+
+/** Convenience source for a member that lives on disk. */
+export function fileSource(name: string, sourcePath: string, size: number): TarInput {
+  return {
+    name,
+    size,
+    open: () => fs.createReadStream(sourcePath, { highWaterMark: 4 * 1024 * 1024 }),
+  };
 }
 
 function tarHeader(name: string, size: number): Buffer {
