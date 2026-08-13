@@ -57,6 +57,13 @@ const envSchema = z.object({
    * time — see the server timeout setup in index.ts.
    */
   IMPORT_UPLOAD_STALL_MINUTES: z.coerce.number().default(5),
+  /**
+   * Base URL a Proxmox node can use to reach this backend, for the pull
+   * transfer (the node fetches the image itself instead of us pushing it).
+   * Leave blank to derive it from PUBLIC_URL's host and BACKEND_PORT, which is
+   * right whenever the backend port is published on the same machine.
+   */
+  IMPORT_PULL_URL_BASE: z.string().default(""),
   /** VMIDs for imported templates live outside the clone pool. */
   IMPORT_VMID_RANGE_START: z.coerce.number().default(9000),
   IMPORT_VMID_RANGE_END: z.coerce.number().default(9899),
