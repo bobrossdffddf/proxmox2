@@ -19,13 +19,25 @@
  */
 import fs from "fs";
 import path from "path";
+import { Readable } from "stream";
 import { env, getNodes, getTemplates } from "../../config";
 import { logger } from "../logger";
 import { proxmox, ProxmoxStorage } from "../proxmox";
 import { upsertImportedTemplate } from "../importedTemplates";
 import { ensureAllStagedVms } from "../stagingMaintainer";
 import { audit } from "../audit";
-import { detectArchiveKind, extractEntry, listEntries, readEntry, writeTar, ArchiveKind, ArchiveEntry } from "../archive";
+import {
+  bufferSource,
+  detectArchiveKind,
+  listEntries,
+  openEntry,
+  readEntry,
+  tarSize,
+  tarStream,
+  ArchiveEntry,
+  ArchiveKind,
+  TarInput,
+} from "../archive";
 import { buildOvf, rewriteOvfHrefs } from "./ovfBuilder";
 import * as store from "./store";
 import type { BundleFile, BundleInspection, ImportSettings, ImportStage } from "./types";
@@ -174,8 +186,14 @@ class Run {
   constructor(readonly importId: number, readonly startedAt = Date.now()) {}
 
   async say(message: string, level: "info" | "warn" | "error" = "info"): Promise<void> {
-    logger.info({ importId: this.importId, level }, message);
-    await store.appendLog(this.importId, level, message);
+    // Log to stdout *first* and at the matching level. The import log lives in
+    // Postgres, which shares a disk with the staging area — so the one failure
+    // most likely to need explaining is also the one most likely to stop the
+    // explanation being written. docker logs still gets it.
+    logger[level]({ importId: this.importId }, message);
+    await store.appendLog(this.importId, level, message).catch((err) => {
+      logger.error({ importId: this.importId, err: String(err) }, "could not write to the import log");
+    });
   }
 
   async stage(stage: ImportStage, progress: number, message: string): Promise<void> {
@@ -210,16 +228,13 @@ export async function runImport(importId: number): Promise<void> {
 
   const settings = row.settings;
   const inspection = row.inspection;
-  const workDir = path.join(env.IMPORT_DIR, `job-${row.public_id}`);
   let createdVmid: number | null = null;
   const uploadedVolids: string[] = [];
 
   try {
-    await fs.promises.mkdir(workDir, { recursive: true });
-
     // -- package ------------------------------------------------------------
     await run.stage("package", 2, `Packaging ${row.original_filename} for import`);
-    const artifacts = await packageBundle(run, row.upload_path, workDir, inspection, settings);
+    const artifacts = await packageBundle(run, row.upload_path, inspection, settings);
     await run.assertNotCancelled();
 
     // -- transfer -----------------------------------------------------------
@@ -284,8 +299,6 @@ export async function runImport(importId: number): Promise<void> {
       await proxmox.deleteVolume(settings.node, volid).catch(() => undefined);
     }
     throw err;
-  } finally {
-    await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
@@ -367,12 +380,19 @@ export async function finalizeImport(importId: number): Promise<{ templateId: st
 // Stage: package
 // ---------------------------------------------------------------------------
 
+/**
+ * Something to be uploaded, described rather than materialised.
+ *
+ * Nothing is written to scratch disk: `open()` produces the bytes on demand,
+ * pulled out of the uploaded archive as the HTTP upload consumes them. An
+ * earlier version extracted every disk and then built the OVA beside them,
+ * which needed roughly 2.5× the payload in free space and ran out silently.
+ */
 interface Artifact {
-  /** Absolute path on the backend's disk. */
-  path: string;
   /** Name it will have in the Proxmox import storage. */
   filename: string;
   bytes: number;
+  open: () => Readable | Promise<Readable>;
   /** True for the artifact the VM is created from. */
   primary: boolean;
 }
@@ -380,7 +400,6 @@ interface Artifact {
 async function packageBundle(
   run: Run,
   uploadPath: string,
-  workDir: string,
   inspection: BundleInspection,
   settings: ImportSettings
 ): Promise<Artifact[]> {
@@ -389,7 +408,14 @@ async function packageBundle(
     const { size } = await fs.promises.stat(uploadPath);
     const filename = safeFilename(inspection.files[0]?.flatName ?? "disk.img", settings.vmid);
     await run.say(`Uploading the disk image directly (${formatBytes(size)})`);
-    return [{ path: uploadPath, filename, bytes: size, primary: true }];
+    return [
+      {
+        filename,
+        bytes: size,
+        open: () => fs.createReadStream(uploadPath, { highWaterMark: 4 * 1024 * 1024 }),
+        primary: true,
+      },
+    ];
   }
 
   const kind = (await detectArchiveKind(uploadPath)) as ArchiveKind;
@@ -399,43 +425,40 @@ async function packageBundle(
   const disks = inspection.files.filter((f) => f.role === "disk" || f.role === "disk-extent");
   if (disks.length === 0) throw new Error("No disk images in the bundle");
 
+  const entryFor = (file: BundleFile): ArchiveEntry => {
+    const entry = entryByName.get(file.name);
+    if (!entry) throw new Error(`Archive entry missing for ${file.name}`);
+    return entry;
+  };
+
   if (settings.strategy === "disk") {
-    // Upload each disk file on its own. Split disks need their extents beside
-    // the descriptor for qemu-img to follow.
-    const artifacts: Artifact[] = [];
-    for (const file of disks) {
-      const dest = path.join(workDir, file.flatName);
-      await extractOne(run, uploadPath, kind, entryByName, file, dest);
-      artifacts.push({
-        path: dest,
-        filename: file.flatName,
-        bytes: (await fs.promises.stat(dest)).size,
-        primary: file.role === "disk",
-      });
-    }
-    return artifacts;
+    // Upload each disk file on its own, straight out of the archive. Split
+    // disks need their extents beside the descriptor for qemu-img to follow.
+    return disks.map((file) => ({
+      filename: file.flatName,
+      bytes: file.size,
+      open: () => openEntry(uploadPath, kind, entryFor(file)),
+      primary: file.role === "disk",
+    }));
   }
 
-  // Strategy "ova": one tar containing the descriptor and every disk file.
-  const members: Array<{ name: string; sourcePath: string }> = [];
-
+  // Strategy "ova": one tar of the descriptor plus every disk file, assembled
+  // as it's uploaded.
   const ovfFile = inspection.files.find((f) => f.role === "ovf");
   const ovfName = ovfFile ? ovfFile.flatName : `${sanitizeStem(inspection.spec.name)}.ovf`;
-  const ovfPath = path.join(workDir, ovfName);
+  let ovfXml: string;
 
   if (ovfFile) {
-    const entry = entryByName.get(ovfFile.name);
-    if (!entry) throw new Error(`Archive entry missing for ${ovfFile.name}`);
-    const original = (await readEntry(uploadPath, kind, entry, 4 * 1024 * 1024)).toString("utf8");
+    const original = (await readEntry(uploadPath, kind, entryFor(ovfFile), 4 * 1024 * 1024)).toString("utf8");
     const { xml, rewritten } = rewriteOvfHrefs(original, inspection.files);
-    await fs.promises.writeFile(ovfPath, xml, "utf8");
+    ovfXml = xml;
     if (rewritten.length > 0) {
       await run.say(`Rewrote ${rewritten.length} disk reference(s) in the OVF: ${rewritten.join(", ")}`);
     }
   } else {
     // No descriptor in the bundle — write one from what the VMX told us.
     const primaryDisks = inspection.files.filter((f) => f.role === "disk");
-    const xml = buildOvf(
+    ovfXml = buildOvf(
       inspection.spec,
       primaryDisks.map((f) => ({
         flatName: f.flatName,
@@ -443,44 +466,25 @@ async function packageBundle(
         capacityBytes: inspection.spec.disks.find((d) => d.file === f.name)?.capacityBytes ?? null,
       }))
     );
-    await fs.promises.writeFile(ovfPath, xml, "utf8");
     await run.say(`Generated an OVF descriptor for ${primaryDisks.length} disk(s) (the bundle had none)`);
   }
-  members.push({ name: ovfName, sourcePath: ovfPath });
 
-  for (const file of disks) {
-    const dest = path.join(workDir, file.flatName);
-    await extractOne(run, uploadPath, kind, entryByName, file, dest);
-    members.push({ name: file.flatName, sourcePath: dest });
-  }
+  const members: TarInput[] = [
+    bufferSource(ovfName, Buffer.from(ovfXml, "utf8")),
+    ...disks.map((file) => ({
+      name: file.flatName,
+      size: file.size,
+      open: () => openEntry(uploadPath, kind, entryFor(file)),
+    })),
+  ];
 
   const ovaName = safeFilename(`wcta-import-${settings.vmid}.ova`, settings.vmid);
-  const ovaPath = path.join(workDir, ovaName);
-  await run.say(`Building ${ovaName} from ${members.length} file(s)`);
-  await writeTar(ovaPath, members);
+  const bytes = tarSize(members);
+  await run.say(
+    `Assembling ${ovaName} from ${members.length} file(s) — ${formatBytes(bytes)}, streamed directly to ${settings.node}`
+  );
 
-  // The individual copies are dead weight once they're inside the tar.
-  for (const member of members) {
-    if (member.sourcePath !== ovaPath) await fs.promises.rm(member.sourcePath, { force: true });
-  }
-
-  const { size } = await fs.promises.stat(ovaPath);
-  await run.say(`Package ready: ${formatBytes(size)}`);
-  return [{ path: ovaPath, filename: ovaName, bytes: size, primary: true }];
-}
-
-async function extractOne(
-  run: Run,
-  uploadPath: string,
-  kind: ArchiveKind,
-  entries: Map<string, ArchiveEntry>,
-  file: BundleFile,
-  dest: string
-): Promise<void> {
-  const entry = entries.get(file.name);
-  if (!entry) throw new Error(`Archive entry missing for ${file.name}`);
-  await run.say(`Extracting ${file.flatName} (${formatBytes(file.size)})`);
-  await extractEntry(uploadPath, kind, entry, dest);
+  return [{ filename: ovaName, bytes, open: () => tarStream(members), primary: true }];
 }
 
 // ---------------------------------------------------------------------------
@@ -499,7 +503,7 @@ async function transferArtifact(
     node: settings.node,
     storage: settings.importStorage,
     content: "import",
-    filePath: artifact.path,
+    source: { size: artifact.bytes, open: artifact.open },
     filename: artifact.filename,
     onProgress: (sent, total) => {
       const percent = Math.floor((sent / total) * 100);

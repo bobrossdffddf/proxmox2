@@ -510,11 +510,22 @@ export class ProxmoxClusterClient {
     node: string;
     storage: string;
     content: "iso" | "vztmpl" | "import";
-    filePath: string;
+    /** A file on disk… */
+    filePath?: string;
+    /** …or a stream of known length, which is how the OVA is sent: it's
+     *  assembled on the fly rather than written to scratch disk first. */
+    source?: { size: number; open: () => Readable | Promise<Readable> };
     filename: string;
     onProgress?: (sent: number, total: number) => void;
   }): Promise<string> {
-    const { size } = await fs.promises.stat(opts.filePath);
+    if (!opts.filePath && !opts.source) {
+      throw new Error("uploadToStorage needs either filePath or source");
+    }
+    const size = opts.source ? opts.source.size : (await fs.promises.stat(opts.filePath!)).size;
+    const openBody = opts.source
+      ? opts.source.open
+      : () => fs.createReadStream(opts.filePath!, { highWaterMark: 4 * 1024 * 1024 });
+
     const boundary = `----wctarange${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
 
     const field = (name: string, value: string) =>
@@ -529,16 +540,20 @@ export class ProxmoxClusterClient {
     );
     const epilogue = Buffer.from(`\r\n--${boundary}--\r\n`, "utf8");
 
-    const filePath = opts.filePath;
     const onProgress = opts.onProgress;
     const body = Readable.from(
       (async function* () {
         yield preamble;
         let sent = 0;
-        for await (const chunk of fs.createReadStream(filePath, { highWaterMark: 4 * 1024 * 1024 })) {
+        for await (const chunk of await openBody()) {
           sent += (chunk as Buffer).length;
           onProgress?.(sent, size);
           yield chunk as Buffer;
+        }
+        // Content-Length was promised up front; a short body would hang the
+        // server waiting for the rest.
+        if (sent !== size) {
+          throw new Error(`Upload source produced ${sent} bytes, expected ${size}`);
         }
         yield epilogue;
       })()

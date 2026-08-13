@@ -55,10 +55,12 @@ failing partway through, and **Show equivalent commands** gives you the exact
 
 ## Disk space
 
-The bundle is uploaded to the backend container, repackaged there, and then sent
-to Proxmox. Budget about **twice the bundle size** in `IMPORT_DIR` (the
-`import-uploads` volume) while an import is running; it's cleaned up afterwards.
-The Import tab shows the free space it has.
+Only the uploaded bundle lands on the backend. The OVA sent to Proxmox is
+assembled as it streams — disks are read out of the uploaded archive and pushed
+straight onto the wire — so nothing is unpacked to disk and no second copy is
+built. Budget a little over **the size of the bundle itself** in `IMPORT_DIR`
+(the `import-uploads` volume). The Import tab shows the free space it has, and
+an upload that wouldn't fit is refused before it starts.
 
 `IMPORT_MAX_UPLOAD_GB` (default 128) caps a single upload.
 
@@ -142,16 +144,13 @@ docker compose logs -f backend
 
 | Message | Cause |
 | --- | --- |
-
-| Message | Cause |
-| --- | --- |
 | `No storage … has the "import" content type` | Tick *Import* on a storage in Datacenter → Storage. |
 | `Proxmox 8.1 predates the storage import API` | Use the generated commands, or upgrade the node. |
 | `Proxmox task failed: … no such volume` | The landing storage is node-local and you picked a different node. Pick the node that owns the storage. |
 | Import stuck on "Still converting disks…" | Normal for a large image. Raise `IMPORT_TASK_TIMEOUT_MINUTES` if it genuinely needs longer than 4 hours. |
 | Clones hang at "waiting for guest IP" | The guest agent isn't installed or isn't running. Go back into the template and finish guest prep. |
 | `No data received for N minutes` | The upload stalled. See the table above; `IMPORT_UPLOAD_STALL_MINUTES` controls how long it waits before giving up. |
-| `Ran out of disk space in /app/uploads` | The `import-uploads` volume filled. Budget about twice the bundle size. |
+| `Ran out of disk space in /app/uploads` | The `import-uploads` volume filled while receiving the upload. It needs a little more than the bundle's own size. |
 
 A failed import cleans up after itself — the half-created VM and the uploaded
 copy are both removed — so you can fix the setting and press **Retry import**
