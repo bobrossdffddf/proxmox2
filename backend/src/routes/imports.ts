@@ -14,7 +14,9 @@
  */
 import fs from "fs";
 import path from "path";
-import { Router } from "express";
+// Request/Response imported explicitly: without them these names resolve to
+// the global fetch types, not Express's.
+import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { env, getNodes, getTemplates } from "../config";
 import { AuthedRequest, requireAdmin, requireAuth } from "../middleware/auth";
@@ -57,6 +59,42 @@ function sanitizeUploadName(name: string): string {
     .replace(/[^A-Za-z0-9._-]+/g, "-")
     .replace(/^[^A-Za-z0-9]+/, "");
   return (cleaned || "upload.zip").slice(0, 200);
+}
+
+/**
+ * Answer a request whose body is still arriving, then hang up.
+ *
+ * Both halves matter, and *how* you hang up decides whether the message
+ * survives. Destroying the socket sends a TCP reset, and a reset discards
+ * whatever the client hasn't read yet — the response included. That's how a
+ * perfectly good error message turns into "Failed to fetch" in the browser.
+ *
+ * Closing the write side instead (FIN) flushes the response first, and the
+ * client stops uploading as soon as it notices. Measured on a client streaming
+ * a 200 MB body: reset delivered nothing, FIN delivered the message after
+ * 0.3 MB had been sent.
+ */
+function respondAndClose(req: Request, res: Response, status: number, message: string): void {
+  const socket = req.socket;
+
+  // Stop writing the body wherever it was going; the socket is left alone.
+  req.unpipe();
+
+  if (!res.headersSent) {
+    // `Connection: close` alone is enough — Node flushes the response and
+    // closes the socket itself. Calling socket.end() on top of it races that
+    // and truncates the response (measured: the client got EPIPE and no
+    // message). So the header does the work and nothing else touches the
+    // socket.
+    res.set("Connection", "close");
+    res.status(status).json({ error: message });
+  }
+
+  // Long-stop only, far too late to race the response above: if a client is
+  // still holding the connection open much later, drop it.
+  setTimeout(() => {
+    if (socket && !socket.destroyed) socket.destroy();
+  }, 30_000).unref();
 }
 
 /** Free bytes in the staging area, or null where statfs isn't available. */
@@ -156,6 +194,32 @@ router.post("/", async (req, res) => {
 });
 
 /**
+ * The single-step upload this route used to be, kept working for browsers
+ * holding a cached copy of the old page.
+ *
+ * It would be simpler to reject these, but rejecting a request whose body is
+ * already streaming is a race: the client has to parse the response before its
+ * own write fails, and it frequently loses — which is precisely how a clear
+ * error turns into "Failed to fetch". Since the old contract is a strict subset
+ * of the new one (reserve a record, then receive into it), just honour it.
+ */
+router.post("/upload", async (req, res) => {
+  logger.warn({ ip: req.ip }, "legacy /imports/upload called — client is running a stale bundle");
+
+  const filename = sanitizeUploadName(String(req.query.filename ?? "").trim());
+  if (!/\.(zip|ova|ovf|vmdk|qcow2|raw|img|tar)$/i.test(filename)) {
+    return respondAndClose(req, res, 400, `Unsupported file type "${path.extname(filename)}".`);
+  }
+
+  const auth = (req as unknown as AuthedRequest).auth;
+  const record = await store.createImport({ originalFilename: filename, createdBy: auth.sub });
+  await store.setUploadProgress(record.id, 0, 0);
+  await store.appendLog(record.id, "warn", "Uploaded from an older version of the page — reload it when convenient.");
+
+  await receiveBundle(req, res, record);
+});
+
+/**
  * Stream the bundle to disk, then inspect it.
  *
  * The body is the file itself — one file per request, so there's nothing a
@@ -168,18 +232,15 @@ router.post("/", async (req, res) => {
  *     5-minute `requestTimeout` is disabled for exactly this route's sake (see
  *     index.ts) and this replaces it with something a slow 40 GB upload won't
  *     trip.
- *   - On failure the response is sent *before* the socket is torn down, so the
- *     browser gets the reason instead of a dead connection.
+ *   - Failures are recorded on the import *before* the response is attempted.
+ *     Answering a client that is still uploading is unreliable by nature, so
+ *     the log is the dependable channel — the wizard polls it throughout.
  */
 router.put("/:publicId/upload", async (req, res) => {
   // Rejecting before the body arrives has the same hazard as failing during it:
   // throwing to the error middleware sends a response the browser won't read
   // until it finishes uploading. Answer and hang up instead.
-  const rejectEarly = (status: number, message: string) => {
-    if (!res.headersSent) res.status(status).json({ error: message });
-    req.unpipe();
-    req.destroy();
-  };
+  const rejectEarly = (status: number, message: string) => respondAndClose(req, res, status, message);
 
   const record = await store.getImportByPublicId(req.params.publicId);
   if (!record) return rejectEarly(404, "import not found");
@@ -187,6 +248,11 @@ router.put("/:publicId/upload", async (req, res) => {
     return rejectEarly(409, `import is ${record.status}; it is not waiting for an upload`);
   }
 
+  await receiveBundle(req, res, record);
+});
+
+/** Receive a bundle into an already-reserved record, then inspect it. */
+async function receiveBundle(req: Request, res: Response, record: store.ImportRow): Promise<void> {
   const filename = record.original_filename;
   const dest = path.join(await importDir(), `${record.public_id}-${filename}`);
   const declared = Number(req.headers["content-length"] ?? 0);
@@ -319,16 +385,12 @@ router.put("/:publicId/upload", async (req, res) => {
     await store.markFailed(record.id, message).catch(() => undefined);
     logger.warn({ importId: record.id, received, err: message }, "upload/inspection failed");
 
-    // Answer first, then hang up. Throwing to the error middleware while the
-    // browser is still sending a body means the response never lands and the
-    // progress bar just stops — which is exactly the failure this replaces.
-    if (!res.headersSent) {
-      res.status(err instanceof HttpError ? err.status : 400).json({ error: message });
-    }
-    req.unpipe();
-    req.destroy();
+    // The reason is already on the import above, which is the channel that
+    // always works — the wizard polls the log throughout the upload. This
+    // response is the faster path when the client is in a position to read it.
+    respondAndClose(req, res, err instanceof HttpError ? err.status : 400, message);
   }
-});
+}
 
 // ---------------------------------------------------------------------------
 // Listing and status

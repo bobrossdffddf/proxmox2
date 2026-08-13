@@ -18,7 +18,18 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
-  const res = await fetch(path, { ...init, headers });
+  let res: Response;
+  try {
+    res = await fetch(path, { ...init, headers });
+  } catch {
+    // fetch only rejects when the request never got a response at all. The
+    // browser's own message for this is "Failed to fetch", which sends people
+    // looking in the wrong place — say what it actually means.
+    throw new Error(
+      `Could not reach the server (${init.method ?? "GET"} ${path}). ` +
+        `The backend may be down or restarting — check: docker compose logs -f backend`
+    );
+  }
 
   if (res.status === 401) {
     setToken(null);
@@ -26,11 +37,17 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new Error("not authenticated");
   }
   if (!res.ok) {
-    let msg = res.statusText;
+    let msg = `${res.status} ${res.statusText}`;
     try {
       const body = await res.json();
       if (body?.error) msg = body.error;
-    } catch { /* ignore */ }
+    } catch {
+      // A non-JSON body means the error came from something in front of the
+      // backend (nginx, another proxy) rather than the app itself.
+      if (res.status === 413) {
+        msg = "Upload rejected as too large by a proxy in front of the app, before it reached the backend.";
+      }
+    }
     throw new Error(msg);
   }
   if (res.status === 204) return undefined as unknown as T;
@@ -501,8 +518,19 @@ export const api = {
         }
         if (xhr.status >= 200 && xhr.status < 300 && body) {
           resolve(body as { import: VmImport; suggested: ImportSettings });
+        } else if (xhr.status === 413) {
+          // nginx and friends answer 413 with HTML, so there's no error field
+          // to read. The backend never saw this request.
+          reject(
+            new Error(
+              "A proxy in front of the app rejected the upload as too large before it reached the backend. " +
+                "Check client_max_body_size on any reverse proxy you run in front of WCTARange."
+            )
+          );
         } else {
-          const message = (body as { error?: string } | null)?.error ?? xhr.statusText ?? "upload failed";
+          const message =
+            (body as { error?: string } | null)?.error ??
+            `Upload failed with ${xhr.status} ${xhr.statusText || "(no response)"}`;
           reject(new Error(message));
         }
       };
