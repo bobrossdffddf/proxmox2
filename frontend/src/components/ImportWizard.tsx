@@ -60,6 +60,26 @@ function formatBytes(bytes: number | null | undefined): string {
 
 const ACTIVE_STATUSES = ["queued", "running"];
 
+interface UploadProgress {
+  name: string;
+  percent: number;
+  /** Bytes the browser has handed to the socket. */
+  sent: number;
+  total: number;
+  startedAt: number;
+  /** When `sent` last changed — used to notice a stall. */
+  movedAt?: number;
+  stalled: boolean;
+}
+
+function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  if (seconds < 90) return `${Math.round(seconds)}s`;
+  const minutes = seconds / 60;
+  if (minutes < 90) return `${Math.round(minutes)} min`;
+  return `${(minutes / 60).toFixed(1)} h`;
+}
+
 export function ImportWizard() {
   const [caps, setCaps] = useState<ImportCapabilities | null>(null);
   const [history, setHistory] = useState<VmImport[]>([]);
@@ -67,7 +87,7 @@ export function ImportWizard() {
   const [active, setActive] = useState<VmImport | null>(null);
   const [log, setLog] = useState<ImportLogLine[]>([]);
   const [settings, setSettings] = useState<ImportSettings | null>(null);
-  const [upload, setUpload] = useState<{ name: string; percent: number } | null>(null);
+  const [upload, setUpload] = useState<UploadProgress | null>(null);
   const [commands, setCommands] = useState<string[] | null>(null);
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -155,25 +175,88 @@ export function ImportWizard() {
     setCommands(null);
     setLog([]);
     logCursor.current = 0;
-    setUpload({ name: file.name, percent: 0 });
+    setUpload({ name: file.name, percent: 0, sent: 0, total: file.size, startedAt: Date.now(), stalled: false });
+
+    let logPoll = 0;
+    let importId: string | null = null;
     try {
+      // Reserve the record first so its log is fetchable while bytes are still
+      // in flight — without this, anything the server says during the upload is
+      // written somewhere the browser can't yet address.
+      const created = await api.createImport(file.name, file.size);
+      importId = created.import.id;
+      setActive(created.import);
+
+      const pullLog = async () => {
+        try {
+          const res = await api.getImport(created.import.id, logCursor.current);
+          if (res.log.length > 0) {
+            logCursor.current = Number(res.log[res.log.length - 1].id);
+            setLog((prev) => [...prev, ...res.log]);
+          }
+          setActive(res.import);
+        } catch {
+          // The upload is the thing that matters; a missed poll is harmless.
+        }
+      };
+      // Once straight away so the log isn't blank for the first few seconds,
+      // then on a timer for the rest of the transfer.
+      void pullLog();
+      logPoll = window.setInterval(() => void pullLog(), 4000);
+
       const res = await api.uploadImport(
+        created.import.id,
         file,
-        (percent) => setUpload({ name: file.name, percent }),
+        (percent, sent) =>
+          setUpload((prev) => {
+            const startedAt = prev?.startedAt ?? Date.now();
+            // "Stalled" here means the browser itself has stopped handing bytes
+            // to the socket for a while — the symptom that used to be the only
+            // thing you saw when something went wrong further down.
+            const stalled = prev ? sent === prev.sent && Date.now() - prev.movedAt! > 45_000 : false;
+            return {
+              name: file.name,
+              percent,
+              sent,
+              total: file.size,
+              startedAt,
+              movedAt: prev && sent === prev.sent ? prev.movedAt : Date.now(),
+              stalled,
+            };
+          }),
         (xhr) => {
           uploadXhr.current = xhr;
         }
       );
+
       setActive(res.import);
       setSettings(res.suggested);
-      const detail = await api.getImport(res.import.id, 0);
-      setLog(detail.log);
-      logCursor.current = detail.log.length > 0 ? Number(detail.log[detail.log.length - 1].id) : 0;
+      const detail = await api.getImport(res.import.id, logCursor.current);
+      if (detail.log.length > 0) {
+        logCursor.current = Number(detail.log[detail.log.length - 1].id);
+        setLog((prev) => [...prev, ...detail.log]);
+      }
       await refreshLists();
       setMessage({ kind: "ok", text: `Inspected ${res.import.originalFilename}. Check the plan below.` });
     } catch (err) {
       setMessage({ kind: "error", text: (err as Error).message });
+      // Pull whatever the server managed to record before it gave up — that's
+      // usually the real explanation.
+      if (importId) {
+        try {
+          const detail = await api.getImport(importId, logCursor.current);
+          if (detail.log.length > 0) {
+            logCursor.current = Number(detail.log[detail.log.length - 1].id);
+            setLog((prev) => [...prev, ...detail.log]);
+          }
+          setActive(detail.import);
+        } catch {
+          /* nothing more to add */
+        }
+      }
+      await refreshLists();
     } finally {
+      window.clearInterval(logPoll);
       setUpload(null);
       uploadXhr.current = null;
     }
@@ -238,20 +321,12 @@ export function ImportWizard() {
         )}
 
         {upload ? (
-          <div className="import-dropzone uploading">
-            <div className="name">Uploading {upload.name}</div>
-            <div className="import-progress">
-              <span className="fill" style={{ width: `${upload.percent}%` }} />
-            </div>
-            <div className="k">{upload.percent.toFixed(1)}% — keep this tab open</div>
-            <button
-              type="button"
-              className="danger"
-              onClick={() => uploadXhr.current?.abort()}
-            >
-              Cancel upload
-            </button>
-          </div>
+          <UploadPanel
+            upload={upload}
+            serverBytes={active?.status === "uploading" ? active.uploadBytes : null}
+            log={log}
+            onCancel={() => uploadXhr.current?.abort()}
+          />
         ) : (
           <div
             className={`import-dropzone${dragging ? " dragging" : ""}`}
@@ -412,6 +487,81 @@ export function ImportWizard() {
 }
 
 // ---------------------------------------------------------------------------
+
+/**
+ * The upload in flight.
+ *
+ * Shows two counters on purpose: what the browser has sent, and what the server
+ * says it has received. When the first keeps climbing and the second doesn't,
+ * the bytes are being swallowed between them — almost always a proxy in front
+ * of the app with its own body-size or timeout limit. The server's log is
+ * rendered here too, so a failure mid-upload has somewhere to appear.
+ */
+function UploadPanel({
+  upload,
+  serverBytes,
+  log,
+  onCancel,
+}: {
+  upload: UploadProgress;
+  serverBytes: number | null;
+  log: ImportLogLine[];
+  onCancel: () => void;
+}) {
+  const elapsed = (Date.now() - upload.startedAt) / 1000;
+  const rate = upload.sent / Math.max(1, elapsed);
+  const remaining = rate > 0 ? (upload.total - upload.sent) / rate : Infinity;
+
+  return (
+    <div className="import-dropzone uploading">
+      <div className="name">Uploading {upload.name}</div>
+
+      <div className="import-progress">
+        <span className={`fill${upload.stalled ? " failed" : ""}`} style={{ width: `${upload.percent}%` }} />
+      </div>
+
+      <div className="import-upload-stats">
+        <span>
+          <span className="k">sent</span>
+          <strong>
+            {formatBytes(upload.sent)} / {formatBytes(upload.total)}
+          </strong>
+        </span>
+        <span>
+          <span className="k">rate</span>
+          <strong>{(rate / 1024 / 1024).toFixed(1)} MB/s</strong>
+        </span>
+        <span>
+          <span className="k">remaining</span>
+          <strong>{formatDuration(remaining)}</strong>
+        </span>
+        <span>
+          <span className="k">server received</span>
+          <strong>{serverBytes === null ? "—" : formatBytes(serverBytes)}</strong>
+        </span>
+      </div>
+
+      {upload.stalled && (
+        <div className="admin-message error">
+          No data has left the browser for 45 seconds. The connection may have dropped, or something
+          between the browser and the backend is refusing the body — check the log below and
+          <code> docker compose logs -f backend</code>.
+        </div>
+      )}
+
+      <div className="k">keep this tab open — closing it cancels the upload</div>
+      <button type="button" className="danger" onClick={onCancel}>
+        Cancel upload
+      </button>
+
+      {log.length > 0 && (
+        <div className="import-upload-log">
+          <LogView lines={log} />
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface DetailProps {
   record: VmImport;

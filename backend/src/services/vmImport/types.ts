@@ -56,6 +56,8 @@ export interface BundleInspection {
 export type ImportStrategy = "ova" | "disk";
 
 export type ImportStatus =
+  /** Record exists, bytes are still arriving from the browser. */
+  | "uploading"
   | "inspecting"
   | "ready"
   | "queued"

@@ -51,6 +51,12 @@ const envSchema = z.object({
   // there, and are deleted once the import finishes.
   IMPORT_DIR: z.string().default("/app/uploads"),
   IMPORT_MAX_UPLOAD_GB: z.coerce.number().default(128),
+  /**
+   * Fail an upload if no bytes arrive for this long. Replaces Node's default
+   * 5-minute whole-request timeout, which a multi-gigabyte upload trips every
+   * time — see the server timeout setup in index.ts.
+   */
+  IMPORT_UPLOAD_STALL_MINUTES: z.coerce.number().default(5),
   /** VMIDs for imported templates live outside the clone pool. */
   IMPORT_VMID_RANGE_START: z.coerce.number().default(9000),
   IMPORT_VMID_RANGE_END: z.coerce.number().default(9899),

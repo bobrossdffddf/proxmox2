@@ -179,7 +179,7 @@ export interface SessionNote {
 // ---- VM import ----
 
 export type ImportStatus =
-  | "inspecting" | "ready" | "queued" | "running" | "awaiting_prep" | "succeeded" | "failed" | "cancelled";
+  | "uploading" | "inspecting" | "ready" | "queued" | "running" | "awaiting_prep" | "succeeded" | "failed" | "cancelled";
 
 export type ImportStage =
   | "upload" | "inspect" | "package" | "transfer" | "create" | "configure" | "prep" | "template" | "register" | "done";
@@ -459,19 +459,31 @@ export const api = {
     request<{ ok: true }>(`/api/admin/imports/templates/${id}`, { method: "DELETE" }),
 
   /**
-   * Upload a bundle. Uses XMLHttpRequest rather than fetch purely for
-   * `upload.onprogress` — these files run to tens of gigabytes and a bar that
-   * doesn't move is indistinguishable from a hang.
+   * Reserve an import record before sending any bytes. Doing this first is what
+   * lets the wizard poll the server's own log during the upload — and it's
+   * where an oversized file or a full disk gets rejected, before a browser
+   * spends an hour uploading something that can't land.
+   */
+  createImport: (filename: string, sizeBytes: number) =>
+    request<{ import: VmImport }>("/api/admin/imports", {
+      method: "POST",
+      body: JSON.stringify({ filename: sanitizeUploadName(filename), sizeBytes }),
+    }),
+
+  /**
+   * Upload a bundle into a reserved record. Uses XMLHttpRequest rather than
+   * fetch purely for `upload.onprogress` — these files run to tens of
+   * gigabytes and a bar that doesn't move is indistinguishable from a hang.
    */
   uploadImport(
+    id: string,
     file: File,
     onProgress: (percent: number, loaded: number) => void,
     onXhr?: (xhr: XMLHttpRequest) => void
   ): Promise<{ import: VmImport; suggested: ImportSettings }> {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      const name = sanitizeUploadName(file.name);
-      xhr.open("POST", `/api/admin/imports/upload?filename=${encodeURIComponent(name)}`);
+      xhr.open("PUT", `/api/admin/imports/${id}/upload`);
 
       const token = getToken();
       if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
@@ -494,7 +506,12 @@ export const api = {
           reject(new Error(message));
         }
       };
-      xhr.onerror = () => reject(new Error("Upload failed — the connection dropped"));
+      xhr.onerror = () =>
+        reject(
+          new Error(
+            "Upload failed — the connection dropped. Check the import log below; the server may have recorded why."
+          )
+        );
       xhr.onabort = () => reject(new Error("Upload cancelled"));
 
       onXhr?.(xhr);
