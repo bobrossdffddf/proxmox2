@@ -20,6 +20,17 @@ import zlib from "zlib";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 
+/**
+ * Chunk size for streaming archive members.
+ *
+ * Deliberately modest. These bytes are usually on their way into a TLS upload,
+ * and encryption happens synchronously per write — so a large chunk stalls the
+ * event loop for as long as it takes to encrypt. With 4 MB chunks the backend's
+ * own API responses stretched into tens of seconds during an upload. 512 KB
+ * keeps syscalls efficient while leaving the loop responsive.
+ */
+export const STREAM_CHUNK = 512 * 1024;
+
 export interface ArchiveEntry {
   /** Path as stored in the archive, normalized to forward slashes. */
   name: string;
@@ -315,7 +326,7 @@ export async function openEntry(
     return fs.createReadStream(filePath, {
       start: entry.headerOffset,
       end: entry.headerOffset + entry.size - 1,
-      highWaterMark: 4 * 1024 * 1024,
+      highWaterMark: STREAM_CHUNK,
     });
   }
 
@@ -323,7 +334,7 @@ export async function openEntry(
   const source = fs.createReadStream(filePath, {
     start,
     end: start + entry.compressedSize - 1,
-    highWaterMark: 4 * 1024 * 1024,
+    highWaterMark: STREAM_CHUNK,
   });
 
   if (entry.method === 0) return source;
@@ -433,7 +444,7 @@ export function fileSource(name: string, sourcePath: string, size: number): TarI
   return {
     name,
     size,
-    open: () => fs.createReadStream(sourcePath, { highWaterMark: 4 * 1024 * 1024 }),
+    open: () => fs.createReadStream(sourcePath, { highWaterMark: STREAM_CHUNK }),
   };
 }
 

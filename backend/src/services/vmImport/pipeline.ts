@@ -36,6 +36,7 @@ import {
   tarStream,
   ArchiveEntry,
   ArchiveKind,
+  STREAM_CHUNK,
   TarInput,
 } from "../archive";
 import { buildOvf, rewriteOvfHrefs } from "./ovfBuilder";
@@ -239,6 +240,7 @@ export async function runImport(importId: number): Promise<void> {
 
     // -- transfer -----------------------------------------------------------
     await run.stage("transfer", 10, `Uploading to ${settings.importStorage} on ${settings.node}`);
+    await assertRoomOnNode(run, settings, artifacts.reduce((sum, a) => sum + a.bytes, 0));
     for (const [index, artifact] of artifacts.entries()) {
       const volid = await transferArtifact(run, settings, artifact, index, artifacts.length);
       uploadedVolids.push(volid);
@@ -412,7 +414,7 @@ async function packageBundle(
       {
         filename,
         bytes: size,
-        open: () => fs.createReadStream(uploadPath, { highWaterMark: 4 * 1024 * 1024 }),
+        open: () => fs.createReadStream(uploadPath, { highWaterMark: STREAM_CHUNK }),
         primary: true,
       },
     ];
@@ -491,6 +493,35 @@ async function packageBundle(
 // Stage: transfer
 // ---------------------------------------------------------------------------
 
+/**
+ * Free space on the node's landing storage, checked before a byte is sent.
+ *
+ * Discovering there's no room 7 GB into a 10 GB upload costs twenty minutes and
+ * reports itself as `write EPIPE`, which explains nothing.
+ */
+async function assertRoomOnNode(run: Run, settings: ImportSettings, totalBytes: number): Promise<void> {
+  const storages = await proxmox.listStorages(settings.node).catch(() => []);
+  const target = storages.find((s) => s.storage === settings.importStorage);
+
+  if (!target || target.avail === null) {
+    await run.say(`Could not read free space on ${settings.importStorage}; continuing anyway`, "warn");
+    return;
+  }
+
+  await run.say(
+    `${settings.importStorage} on ${settings.node} reports ${formatBytes(target.avail)} free; ` +
+      `this transfer needs ${formatBytes(totalBytes)}`
+  );
+
+  if (target.avail < totalBytes * 1.02) {
+    throw new Error(
+      `Not enough room on ${settings.importStorage} (${settings.node}): ${formatBytes(target.avail)} free, ` +
+        `and the image needs ${formatBytes(totalBytes)}. Free space on that storage, or pick a different ` +
+        `landing storage in the import plan.`
+    );
+  }
+}
+
 async function transferArtifact(
   run: Run,
   settings: ImportSettings,
@@ -499,27 +530,85 @@ async function transferArtifact(
   artifactCount: number
 ): Promise<string> {
   let lastLogged = 0;
-  const upid = await proxmox.uploadToStorage({
-    node: settings.node,
-    storage: settings.importStorage,
-    content: "import",
-    source: { size: artifact.bytes, open: artifact.open },
-    filename: artifact.filename,
-    onProgress: (sent, total) => {
-      const percent = Math.floor((sent / total) * 100);
-      if (percent >= lastLogged + 10) {
-        lastLogged = percent;
-        // Transfer spans 10–50% of the overall bar, shared between artifacts.
-        const share = 40 / artifactCount;
-        detach(store.setProgress(run.importId, 10 + index * share + (percent / 100) * share));
-        detach(store.appendLog(run.importId, "info", `Uploaded ${percent}% of ${artifact.filename}`));
-      }
-    },
-  });
+  let sentBytes = 0;
+
+  let upid: string;
+  try {
+    upid = await proxmox.uploadToStorage({
+      node: settings.node,
+      storage: settings.importStorage,
+      content: "import",
+      source: { size: artifact.bytes, open: artifact.open },
+      filename: artifact.filename,
+      onProgress: (sent, total) => {
+        sentBytes = sent;
+        const percent = Math.floor((sent / total) * 100);
+        if (percent >= lastLogged + 10) {
+          lastLogged = percent;
+          // Transfer spans 10–50% of the overall bar, shared between artifacts.
+          const share = 40 / artifactCount;
+          detach(store.setProgress(run.importId, 10 + index * share + (percent / 100) * share));
+          detach(store.appendLog(run.importId, "info", `Uploaded ${percent}% of ${artifact.filename}`));
+        }
+      },
+    });
+  } catch (err) {
+    const explanation = await explainTransferFailure(err, settings, artifact, sentBytes);
+
+    // A half-sent upload still occupies its full share of the node's disk. Left
+    // behind, each retry makes the space problem it was caused by worse.
+    const partial = `${settings.importStorage}:import/${artifact.filename}`;
+    await proxmox
+      .deleteVolume(settings.node, partial)
+      .then(() => run.say(`Removed the partial upload ${partial}`, "warn"))
+      .catch(() => undefined);
+
+    throw new Error(explanation);
+  }
 
   await proxmox.waitForLongTask(settings.node, upid, { timeoutMs: 60 * 60 * 1000, pollMs: 5000 });
   await run.say(`${artifact.filename} is on ${settings.importStorage}`);
   return `${settings.importStorage}:import/${artifact.filename}`;
+}
+
+/**
+ * Turn a socket-level upload failure into something actionable.
+ *
+ * EPIPE/ECONNRESET partway through means the node hung up on us. By far the
+ * most common reason is that it ran out of room — and note that Proxmox stages
+ * an upload in a temporary file before moving it into the storage, so the
+ * *root* filesystem needs the space too, even when the target storage has
+ * plenty.
+ */
+async function explainTransferFailure(
+  err: unknown,
+  settings: ImportSettings,
+  artifact: Artifact,
+  sentBytes: number
+): Promise<string> {
+  const raw = err instanceof Error ? err.message : String(err);
+  const hungUp = /EPIPE|ECONNRESET|socket hang up|aborted/i.test(raw);
+  if (!hungUp) return raw;
+
+  const progress = `${formatBytes(sentBytes)} of ${formatBytes(artifact.bytes)}`;
+  let freeNow = "";
+  try {
+    const storages = await proxmox.listStorages(settings.node);
+    const target = storages.find((s) => s.storage === settings.importStorage);
+    if (target?.avail !== null && target?.avail !== undefined) {
+      freeNow = ` ${settings.importStorage} now reports ${formatBytes(target.avail)} free.`;
+    }
+  } catch {
+    // The node may be unhappy enough not to answer; the advice below still holds.
+  }
+
+  return (
+    `${settings.node} closed the connection after ${progress} (${raw}).${freeNow} ` +
+    `This almost always means the node ran out of disk while receiving the image. ` +
+    `Proxmox writes an upload to a temporary file before moving it into the storage, so check free ` +
+    `space on the node's root filesystem as well as on ${settings.importStorage} — run "df -h /" ` +
+    `and "df -h /var/lib/vz" on ${settings.node}.`
+  );
 }
 
 // ---------------------------------------------------------------------------

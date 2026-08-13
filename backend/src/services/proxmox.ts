@@ -16,6 +16,7 @@ import https from "https";
 import { Readable } from "stream";
 import axios, { AxiosInstance } from "axios";
 import { env, getNodes, ProxmoxNodeConfig } from "../config";
+import { STREAM_CHUNK } from "./archive";
 import { logger } from "./logger";
 
 interface ProxmoxNodeStatus {
@@ -524,7 +525,7 @@ export class ProxmoxClusterClient {
     const size = opts.source ? opts.source.size : (await fs.promises.stat(opts.filePath!)).size;
     const openBody = opts.source
       ? opts.source.open
-      : () => fs.createReadStream(opts.filePath!, { highWaterMark: 4 * 1024 * 1024 });
+      : () => fs.createReadStream(opts.filePath!, { highWaterMark: STREAM_CHUNK });
 
     const boundary = `----wctarange${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
 
