@@ -46,6 +46,13 @@ services:
       guacd:
         condition: service_started
     environment:
+      # Cap V8's heap. Left alone, Node sizes old-space from total system RAM
+      # and lets garbage accumulate — during a multi-gigabyte import transfer
+      # this backend was observed at 3.6 GB RSS and 180% CPU on a 7.7 GB host,
+      # GC-thrashing until the transfer stalled and health checks stopped
+      # answering. The live set here is a few MB (everything streams), so a
+      # small heap costs nothing and keeps collection cheap and frequent.
+      NODE_OPTIONS: ${NODE_OPTIONS:---openssl-legacy-provider --max-old-space-size=768}
       NODE_ENV: ${NODE_ENV}
       LOG_LEVEL: ${LOG_LEVEL}
       BACKEND_PORT: ${BACKEND_PORT}
