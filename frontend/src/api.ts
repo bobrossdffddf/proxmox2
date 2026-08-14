@@ -260,6 +260,8 @@ export interface ImportSettings {
   busType: "auto" | "sata" | "scsi" | "ide" | "virtio";
   addTpm: boolean;
   virtioIso: string | null;
+  /** Set by the server from the address this page reached it on. */
+  pullUrlBase?: string | null;
   keepUpload: boolean;
   registerTemplate: boolean;
   startAfterImport: boolean;

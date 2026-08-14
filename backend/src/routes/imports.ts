@@ -479,6 +479,9 @@ const settingsSchema = z.object({
   password: z.string().min(1).max(256),
   stagingPoolSize: z.number().int().min(0).max(20),
   strategy: z.enum(["ova", "disk"]),
+  // Server-set below; accepted here only so a round-tripped settings object
+  // validates.
+  pullUrlBase: z.string().max(300).nullable().optional(),
   busType: z.enum(["auto", "sata", "scsi", "ide", "virtio"]),
   addTpm: z.boolean(),
   virtioIso: z.string().max(300).nullable().default(null),
@@ -508,7 +511,11 @@ router.post("/:publicId/start", async (req, res) => {
 
   const parse = settingsSchema.safeParse(req.body);
   if (!parse.success) throw new HttpError(400, "invalid import settings", parse.error.flatten());
-  const settings = parse.data as ImportSettings;
+
+  // Record how this admin's browser reached us. That address demonstrably
+  // works from the LAN, which is what the node needs in order to fetch the
+  // image itself — PUBLIC_URL is often still the template's localhost.
+  const settings: ImportSettings = { ...parse.data, pullUrlBase: derivePullUrlBase(req) };
 
   // The target must actually be able to take it — checked here rather than in
   // the worker so the admin gets a straight answer while they're still looking.
@@ -628,6 +635,18 @@ router.delete("/templates/:id", async (req, res) => {
 // helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * The origin the admin is using, rebuilt as a backend URL. `req.hostname`
+ * comes from the Host header (or X-Forwarded-Host, since trust proxy is on),
+ * so it is the name or address that actually routed here.
+ */
+function derivePullUrlBase(req: Request): string | null {
+  const host = req.hostname;
+  if (!host || host === "localhost" || host === "127.0.0.1") return null;
+  const bracketed = host.includes(":") ? `[${host}]` : host; // bare IPv6
+  return `http://${bracketed}:${env.BACKEND_PORT}`;
+}
+
 /** True once the pipeline is past disk creation, so a VM exists on the node. */
 function vmAlreadyCreated(record: store.ImportRow): boolean {
   return Boolean(record.settings) && ["prep", "template", "register", "done"].includes(record.stage);
@@ -717,6 +736,7 @@ async function suggestSettings(inspection: BundleInspection, filename: string): 
     busType: "auto",
     addTpm: spec.ostype === "win11",
     virtioIso: spec.family === "windows" ? chosen?.virtioIsos[0] ?? null : null,
+    pullUrlBase: null,
     keepUpload: false,
     registerTemplate: true,
     startAfterImport: true,

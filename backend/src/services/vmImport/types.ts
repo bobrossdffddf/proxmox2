@@ -126,6 +126,12 @@ export interface ImportSettings {
   addTpm: boolean;
   /** Volid of a virtio-win driver ISO to mount on ide2, if one is available. */
   virtioIso: string | null;
+  /**
+   * Base URL a Proxmox node can use to reach this backend, captured from the
+   * address the admin's browser used to start the import. Server-set; anything
+   * a client sends is ignored.
+   */
+  pullUrlBase: string | null;
   /** Leave the landing-zone copy in place after a successful import. */
   keepUpload: boolean;
   /** Register a dashboard tile once the template exists. */
