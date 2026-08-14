@@ -229,14 +229,15 @@ export async function runImport(importId: number): Promise<void> {
     throw new Error("Import is missing its upload, inspection or settings");
   }
 
-  const settings = row.settings;
   const inspection = row.inspection;
+  const { settings, note } = resolveStrategy(row.settings, inspection);
   let createdVmid: number | null = null;
   const uploadedVolids: string[] = [];
 
   try {
     // -- package ------------------------------------------------------------
     await run.stage("package", 2, `Packaging ${row.original_filename} for import`);
+    if (note) await run.say(note);
     const artifacts = await packageBundle(run, row.upload_path, inspection, settings);
     await run.assertNotCancelled();
 
@@ -401,6 +402,37 @@ interface Artifact {
   primary: boolean;
 }
 
+/**
+ * A split disk cannot go inside an OVA.
+ *
+ * Proxmox extracts only the single member named by `import-from` into a temp
+ * directory and hands that to qemu-img — which then follows the descriptor to
+ * extents that were left behind in the archive:
+ *
+ *   extracting local:import/vm.ova/disk.vmdk
+ *   qemu-img: Could not open '…/disk-s001.vmdk': No such file or directory
+ *
+ * Uploading the files individually puts the descriptor and every extent side by
+ * side in the import directory, where qemu-img resolves them normally.
+ *
+ * Decided once, here, because packaging, transfer and create all have to agree
+ * on it — createVm asks Proxmox to parse the OVF only under the "ova" strategy.
+ */
+export function resolveStrategy(
+  settings: ImportSettings,
+  inspection: BundleInspection
+): { settings: ImportSettings; note: string | null } {
+  const extents = inspection.files.filter((f) => f.role === "disk-extent").length;
+  if (settings.strategy !== "ova" || extents === 0) return { settings, note: null };
+
+  return {
+    settings: { ...settings, strategy: "disk" },
+    note:
+      `This disk is split across ${extents} extent(s), which Proxmox cannot extract from inside ` +
+      `an OVA. Sending the descriptor and its extents as separate files instead.`,
+  };
+}
+
 async function packageBundle(
   run: Run,
   uploadPath: string,
@@ -435,15 +467,28 @@ async function packageBundle(
     return entry;
   };
 
+  // Members are renamed to be volid-safe, and a split VMDK's descriptor names
+  // its extents in plain text — so any descriptor has to be rewritten to match,
+  // or qemu-img looks for files that are no longer there.
+  const renames = new Map<string, string>();
+  for (const file of inspection.files) {
+    renames.set(path.posix.basename(file.name).toLowerCase(), file.flatName);
+  }
+
   if (settings.strategy === "disk") {
-    // Upload each disk file on its own, straight out of the archive. Split
-    // disks need their extents beside the descriptor for qemu-img to follow.
-    return disks.map((file) => ({
-      filename: file.flatName,
-      bytes: file.size,
-      open: () => openEntry(uploadPath, kind, entryFor(file)),
-      primary: file.role === "disk",
-    }));
+    // Each file on its own, straight out of the archive, so the extents land
+    // beside the descriptor for qemu-img to follow.
+    const artifacts: Artifact[] = [];
+    for (const file of disks) {
+      const rewritten = await rewriteDescriptorIfNeeded(run, uploadPath, kind, entryFor(file), file, renames);
+      artifacts.push({
+        filename: file.flatName,
+        bytes: rewritten ? rewritten.size : file.size,
+        open: rewritten ? rewritten.open : () => openEntry(uploadPath, kind, entryFor(file)),
+        primary: file.role === "disk",
+      });
+    }
+    return artifacts;
   }
 
   // Strategy "ova": one tar of the descriptor plus every disk file, assembled
@@ -471,14 +516,6 @@ async function packageBundle(
       }))
     );
     await run.say(`Generated an OVF descriptor for ${primaryDisks.length} disk(s) (the bundle had none)`);
-  }
-
-  // Members are renamed to be volid-safe, and a split VMDK's descriptor names
-  // its extents in plain text — so any descriptor has to be rewritten to match,
-  // or qemu-img looks for files that are no longer there.
-  const renames = new Map<string, string>();
-  for (const file of inspection.files) {
-    renames.set(path.posix.basename(file.name).toLowerCase(), file.flatName);
   }
 
   const diskMembers: TarInput[] = [];
