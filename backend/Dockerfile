@@ -20,6 +20,13 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV NODE_OPTIONS=--openssl-legacy-provider
 
+# VMware splits disks into 2 GB extents, and Proxmox cannot read that set in
+# either form it accepts — not inside an OVA (it extracts one member) and not as
+# separate uploads (it validates each file, and an extent alone is not a valid
+# image). qemu-img merges them into one image here first. ~10 MB installed,
+# from the community repo, which the node:*-alpine base already has enabled.
+RUN apk add --no-cache qemu-img
+
 # Reuse the already-resolved, pruned production tree from the builder stage.
 # No second npm install means no second chance to fail.
 COPY package.json ./

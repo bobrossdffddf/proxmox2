@@ -17,9 +17,29 @@ exactly what that means when it gets there.
 | `.zip` containing an `.ovf` + disks | The existing OVF is kept; only its file references are rewritten. |
 | Bare `.vmdk`, `.qcow2`, `.raw` | Uploaded as-is. There's no metadata in a disk image, so set CPU, memory and OS yourself. |
 
-Split disks (`disk-s001.vmdk`, `disk-flat.vmdk`) are handled: the extents ride
-along in the package and the *descriptor* is what gets converted. macOS's
-`__MACOSX` noise is ignored.
+macOS's `__MACOSX` noise is ignored.
+
+### Split disks
+
+VMware splits a disk into 2 GB extents by default — a small text descriptor
+naming `disk-s001.vmdk`, `disk-s002.vmdk` and so on. Proxmox cannot read that
+set in either form it accepts:
+
+- inside an `.ova` it extracts *only* the member named by `import-from`, so the
+  descriptor arrives without the extents holding the data;
+- uploaded as separate files it runs `qemu-img` over each one as it lands, and
+  an extent by itself is not a valid image (`Could not open 'disk-s001.vmdk':
+  Invalid argument`).
+
+So a split disk is merged into a single `.qcow2` here, with `qemu-img`, before
+anything is uploaded — the node only ever sees one file. This needs scratch room
+for the extents plus the merged image, which is checked before the merge starts;
+the extents are deleted as soon as the merge finishes, so the slow upload isn't
+holding onto them.
+
+`qemu-img` ships in the backend image. If you're running an image built before
+this was added, the import says so and a `docker compose build backend` fixes
+it.
 
 ## What it reads out of the bundle
 
