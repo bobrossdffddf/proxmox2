@@ -31,6 +31,7 @@ import {
   manualCommands,
   NodeCapabilities,
   probeNode,
+  resolveStrategy,
 } from "../services/vmImport/pipeline";
 import * as store from "../services/vmImport/store";
 import type { BundleInspection, ImportSettings } from "../services/vmImport/types";
@@ -712,7 +713,7 @@ async function suggestSettings(inspection: BundleInspection, filename: string): 
     return list[0]?.storage ?? "";
   };
 
-  return {
+  const settings: ImportSettings = {
     templateId,
     templateName: titleCase(spec.name),
     description: `Imported from ${filename}`,
@@ -741,6 +742,10 @@ async function suggestSettings(inspection: BundleInspection, filename: string): 
     registerTemplate: true,
     startAfterImport: true,
   };
+
+  // Same rule the pipeline enforces at run time, so the form shows what will
+  // actually happen rather than a choice that gets overridden later.
+  return resolveStrategy(settings, inspection).settings;
 }
 
 function titleCase(slug: string): string {

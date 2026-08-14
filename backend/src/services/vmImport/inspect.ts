@@ -129,18 +129,34 @@ async function inspectBareImage(
 // File classification
 // ---------------------------------------------------------------------------
 
+/**
+ * Names that survive the trip into Proxmox.
+ *
+ * A member ends up inside a storage volume id — `local:import/vm.ova/disk.vmdk`
+ * — and Proxmox cannot parse a volid containing spaces. A VM folder called
+ * "Narnia Server" yields "Narnia Server.vmdk", which fails at disk-import time
+ * with nothing that points back here, so the scrubbing happens once, up front,
+ * and every later reference (the OVF href, the tar member, the volid) uses the
+ * scrubbed name.
+ */
+function sanitizeMemberName(name: string): string {
+  const cleaned = name.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[-.]+/, "");
+  return cleaned || "file";
+}
+
 function classify(entries: ArchiveEntry[]): BundleFile[] {
   const used = new Set<string>();
 
   return entries.map((entry) => {
     const base = path.posix.basename(entry.name);
+    const safe = sanitizeMemberName(base);
 
     // Repackaging flattens the tree, so collisions between same-named files in
     // different folders have to be broken here rather than silently later.
-    let flat = base;
+    let flat = safe;
     for (let n = 2; used.has(flat.toLowerCase()); n++) {
-      const ext = path.posix.extname(base);
-      flat = `${base.slice(0, base.length - ext.length)}-${n}${ext}`;
+      const ext = path.posix.extname(safe);
+      flat = `${safe.slice(0, safe.length - ext.length)}-${n}${ext}`;
     }
     used.add(flat.toLowerCase());
 

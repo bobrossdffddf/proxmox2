@@ -32,6 +32,7 @@ import {
   listEntries,
   openEntry,
   readEntry,
+  readEntryHead,
   tarSize,
   tarStream,
   ArchiveEntry,
@@ -228,14 +229,15 @@ export async function runImport(importId: number): Promise<void> {
     throw new Error("Import is missing its upload, inspection or settings");
   }
 
-  const settings = row.settings;
   const inspection = row.inspection;
+  const { settings, note } = resolveStrategy(row.settings, inspection);
   let createdVmid: number | null = null;
   const uploadedVolids: string[] = [];
 
   try {
     // -- package ------------------------------------------------------------
     await run.stage("package", 2, `Packaging ${row.original_filename} for import`);
+    if (note) await run.say(note);
     const artifacts = await packageBundle(run, row.upload_path, inspection, settings);
     await run.assertNotCancelled();
 
@@ -400,6 +402,37 @@ interface Artifact {
   primary: boolean;
 }
 
+/**
+ * A split disk cannot go inside an OVA.
+ *
+ * Proxmox extracts only the single member named by `import-from` into a temp
+ * directory and hands that to qemu-img — which then follows the descriptor to
+ * extents that were left behind in the archive:
+ *
+ *   extracting local:import/vm.ova/disk.vmdk
+ *   qemu-img: Could not open '…/disk-s001.vmdk': No such file or directory
+ *
+ * Uploading the files individually puts the descriptor and every extent side by
+ * side in the import directory, where qemu-img resolves them normally.
+ *
+ * Decided once, here, because packaging, transfer and create all have to agree
+ * on it — createVm asks Proxmox to parse the OVF only under the "ova" strategy.
+ */
+export function resolveStrategy(
+  settings: ImportSettings,
+  inspection: BundleInspection
+): { settings: ImportSettings; note: string | null } {
+  const extents = inspection.files.filter((f) => f.role === "disk-extent").length;
+  if (settings.strategy !== "ova" || extents === 0) return { settings, note: null };
+
+  return {
+    settings: { ...settings, strategy: "disk" },
+    note:
+      `This disk is split across ${extents} extent(s), which Proxmox cannot extract from inside ` +
+      `an OVA. Sending the descriptor and its extents as separate files instead.`,
+  };
+}
+
 async function packageBundle(
   run: Run,
   uploadPath: string,
@@ -434,15 +467,28 @@ async function packageBundle(
     return entry;
   };
 
+  // Members are renamed to be volid-safe, and a split VMDK's descriptor names
+  // its extents in plain text — so any descriptor has to be rewritten to match,
+  // or qemu-img looks for files that are no longer there.
+  const renames = new Map<string, string>();
+  for (const file of inspection.files) {
+    renames.set(path.posix.basename(file.name).toLowerCase(), file.flatName);
+  }
+
   if (settings.strategy === "disk") {
-    // Upload each disk file on its own, straight out of the archive. Split
-    // disks need their extents beside the descriptor for qemu-img to follow.
-    return disks.map((file) => ({
-      filename: file.flatName,
-      bytes: file.size,
-      open: () => openEntry(uploadPath, kind, entryFor(file)),
-      primary: file.role === "disk",
-    }));
+    // Each file on its own, straight out of the archive, so the extents land
+    // beside the descriptor for qemu-img to follow.
+    const artifacts: Artifact[] = [];
+    for (const file of disks) {
+      const rewritten = await rewriteDescriptorIfNeeded(run, uploadPath, kind, entryFor(file), file, renames);
+      artifacts.push({
+        filename: file.flatName,
+        bytes: rewritten ? rewritten.size : file.size,
+        open: rewritten ? rewritten.open : () => openEntry(uploadPath, kind, entryFor(file)),
+        primary: file.role === "disk",
+      });
+    }
+    return artifacts;
   }
 
   // Strategy "ova": one tar of the descriptor plus every disk file, assembled
@@ -472,14 +518,20 @@ async function packageBundle(
     await run.say(`Generated an OVF descriptor for ${primaryDisks.length} disk(s) (the bundle had none)`);
   }
 
-  const members: TarInput[] = [
-    bufferSource(ovfName, Buffer.from(ovfXml, "utf8")),
-    ...disks.map((file) => ({
-      name: file.flatName,
-      size: file.size,
-      open: () => openEntry(uploadPath, kind, entryFor(file)),
-    })),
-  ];
+  const diskMembers: TarInput[] = [];
+  for (const file of disks) {
+    const rewritten = await rewriteDescriptorIfNeeded(run, uploadPath, kind, entryFor(file), file, renames);
+    diskMembers.push(
+      rewritten ??
+        {
+          name: file.flatName,
+          size: file.size,
+          open: () => openEntry(uploadPath, kind, entryFor(file)),
+        }
+    );
+  }
+
+  const members: TarInput[] = [bufferSource(ovfName, Buffer.from(ovfXml, "utf8")), ...diskMembers];
 
   const ovaName = safeFilename(`wcta-import-${settings.vmid}.ova`, settings.vmid);
   const bytes = tarSize(members);
@@ -488,6 +540,50 @@ async function packageBundle(
   );
 
   return [{ filename: ovaName, bytes, open: () => tarStream(members), primary: true }];
+}
+
+/** A text VMDK descriptor is small; anything larger is a real disk image. */
+const MAX_DESCRIPTOR_BYTES = 64 * 1024;
+
+/**
+ * Rewrite a split VMDK's descriptor so its extent names match the renamed
+ * members, returning null when the file isn't a descriptor and can be streamed
+ * through untouched.
+ *
+ * A descriptor is a few hundred bytes of text listing its extents by name:
+ *
+ *   RW 4194304 SPARSE "Narnia Server-s001.vmdk"
+ *
+ * Members get scrubbed of spaces on the way into the OVA (a Proxmox volid
+ * can't carry them), so without this the descriptor still points at names that
+ * no longer exist in the archive.
+ */
+async function rewriteDescriptorIfNeeded(
+  run: Run,
+  uploadPath: string,
+  kind: ArchiveKind,
+  entry: ArchiveEntry,
+  file: BundleFile,
+  renames: Map<string, string>
+): Promise<TarInput | null> {
+  if (!/\.vmdk$/i.test(file.name) || file.size > MAX_DESCRIPTOR_BYTES) return null;
+
+  const head = await readEntryHead(uploadPath, kind, entry, 512);
+  if (!head.toString("latin1").includes("# Disk DescriptorFile")) return null;
+
+  // latin1 round-trips arbitrary bytes unchanged; descriptors are ASCII anyway.
+  const original = (await readEntry(uploadPath, kind, entry, MAX_DESCRIPTOR_BYTES)).toString("latin1");
+  const changed: string[] = [];
+  const rewritten = original.replace(/"([^"]+)"/g, (whole, inner: string) => {
+    const mapped = renames.get(path.posix.basename(inner).toLowerCase());
+    if (!mapped || mapped === inner) return whole;
+    changed.push(`${inner} → ${mapped}`);
+    return `"${mapped}"`;
+  });
+
+  if (changed.length === 0) return null;
+  await run.say(`Repointed ${file.flatName} at its renamed extents: ${changed.join(", ")}`);
+  return bufferSource(file.flatName, Buffer.from(rewritten, "latin1"));
 }
 
 // ---------------------------------------------------------------------------
@@ -867,7 +963,12 @@ async function createVm(
       `${attachable.length} disk(s) on ${bus}, ${settings.firmware === "ovmf" ? "UEFI" : "BIOS"}`
   );
 
-  const upid = await proxmox.createVm(settings.node, config);
+  let upid: string;
+  try {
+    upid = await proxmox.createVm(settings.node, config);
+  } catch (err) {
+    throw new Error(explainCreateFailure(err, settings));
+  }
 
   // Disk conversion happens inside this task and is the long pole: an 80 GB
   // Windows image can take well over an hour on spinning storage.
@@ -888,6 +989,42 @@ async function createVm(
 
   await run.say(`VM ${settings.vmid} created`);
   return { vmid: settings.vmid };
+}
+
+/**
+ * Translate the create-time failures that are really configuration problems.
+ *
+ * Proxmox's wording for these describes its own internals — "import working
+ * storage", "parameter verification failed" — and gives no hint that the fix is
+ * two clicks away in the storage settings.
+ */
+function explainCreateFailure(err: unknown, settings: ImportSettings): string {
+  const raw = err instanceof Error ? err.message : String(err);
+
+  if (/import working storage .* does not support 'images'|not file based/i.test(raw)) {
+    return (
+      `${settings.importStorage} on ${settings.node} can hold the uploaded image but cannot be used to ` +
+      `convert it: Proxmox extracts the disk out of the OVA in place, which needs the "Disk image" ` +
+      `content type on that same storage. Enable it in Datacenter → Storage → ${settings.importStorage} ` +
+      `→ Content → tick "Disk image", then retry. (Proxmox said: ${raw})`
+    );
+  }
+
+  if (/already exists/i.test(raw)) {
+    return (
+      `VM ${settings.vmid} already exists on ${settings.node}. Delete it there, or change the VMID in the ` +
+      `import plan, then retry. (Proxmox said: ${raw})`
+    );
+  }
+
+  if (/unable to parse.*volume name/i.test(raw)) {
+    return (
+      `Proxmox could not parse the volume name for the uploaded image. This usually means the file name ` +
+      `contains characters a volume id can't carry, such as spaces. (Proxmox said: ${raw})`
+    );
+  }
+
+  return raw;
 }
 
 async function configureVm(run: Run, settings: ImportSettings, vmid: number): Promise<void> {
