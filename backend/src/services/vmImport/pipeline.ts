@@ -532,8 +532,16 @@ async function assertRoomOnNode(run: Run, settings: ImportSettings, totalBytes: 
  * port is the reliable derivation — and IMPORT_PULL_URL_BASE overrides it for
  * anything unusual.
  */
-function pullBaseUrl(): string | null {
+function pullBaseUrl(settings: ImportSettings): string | null {
+  // Explicit configuration wins.
   if (env.IMPORT_PULL_URL_BASE) return env.IMPORT_PULL_URL_BASE.replace(/\/+$/, "");
+
+  // Then the address the admin's own browser used to start this import. That
+  // one is known to reach this backend from the LAN, which is exactly the
+  // property needed — unlike PUBLIC_URL, which is frequently left at the
+  // template's localhost and would silently disable the pull path.
+  if (settings.pullUrlBase) return settings.pullUrlBase.replace(/\/+$/, "");
+
   try {
     const host = new URL(env.PUBLIC_URL).hostname;
     if (!host || host === "localhost" || host === "127.0.0.1") return null;
@@ -553,7 +561,7 @@ function pullBaseUrl(): string | null {
  * so nothing is staged and the size ceiling disappears.
  */
 async function transferByPull(run: Run, settings: ImportSettings, artifact: Artifact): Promise<string> {
-  const base = pullBaseUrl();
+  const base = pullBaseUrl(settings);
   if (!base) {
     throw new Error(
       "Cannot use the pull transfer: no address for this backend that the node could reach. " +
@@ -600,6 +608,17 @@ async function transferByPull(run: Run, settings: ImportSettings, artifact: Arti
   }
 }
 
+/**
+ * Anything past this goes to the node by pull rather than push.
+ *
+ * Pushing a large image into pveproxy's upload endpoint has failed repeatedly
+ * and expensively — twenty minutes of transfer before a bare EPIPE — while
+ * `download-url` writes straight into the storage. Small artifacts still go by
+ * push, which needs no reachable address for this backend and keeps working on
+ * setups where the node can't call back.
+ */
+const PULL_THRESHOLD_BYTES = 1024 ** 3;
+
 async function transferArtifact(
   run: Run,
   settings: ImportSettings,
@@ -609,6 +628,34 @@ async function transferArtifact(
 ): Promise<string> {
   let lastLogged = 0;
   let sentBytes = 0;
+
+  const base = pullBaseUrl(settings);
+  if (artifact.bytes >= PULL_THRESHOLD_BYTES) {
+    if (base) {
+      await run.say(
+        `${formatBytes(artifact.bytes)} is large enough to hand to the node directly, ` +
+          `so ${settings.node} will fetch it from ${base}`
+      );
+      try {
+        return await transferByPull(run, settings, artifact);
+      } catch (pullErr) {
+        await run.say(
+          `Pull transfer failed (${pullErr instanceof Error ? pullErr.message : String(pullErr)}); ` +
+            `falling back to pushing it`,
+          "warn"
+        );
+      }
+    } else {
+      // Say this out loud: silently falling back to the path that keeps failing
+      // is how the last attempt wasted twenty minutes.
+      await run.say(
+        `No address configured that ${settings.node} could fetch from, so this has to be pushed. ` +
+          `If the push fails, set IMPORT_PULL_URL_BASE in .env (e.g. http://192.168.1.10:${env.BACKEND_PORT}) ` +
+          `to let the node pull instead.`,
+        "warn"
+      );
+    }
+  }
 
   let upid: string;
   try {
@@ -641,13 +688,12 @@ async function transferArtifact(
       .then(() => run.say(`Removed the partial upload ${partial}`, "warn"))
       .catch(() => undefined);
 
-    // A push that dies partway is usually pveproxy's staging area filling up,
-    // not the storage. Having the node pull instead skips that staging
-    // entirely, so it's worth one automatic attempt before giving up.
+    // A push that dies partway is worth one attempt the other way round —
+    // unless the artifact was big enough that pull was already tried first.
     const hungUp = /EPIPE|ECONNRESET|socket hang up|aborted/i.test(
       err instanceof Error ? err.message : String(err)
     );
-    if (hungUp && pullBaseUrl()) {
+    if (hungUp && artifact.bytes < PULL_THRESHOLD_BYTES && pullBaseUrl(settings)) {
       await run.say(explanation, "warn");
       await run.say("Retrying with the node pulling the image instead of us pushing it");
       try {
