@@ -639,11 +639,17 @@ async function transferArtifact(
       try {
         return await transferByPull(run, settings, artifact);
       } catch (pullErr) {
-        await run.say(
-          `Pull transfer failed (${pullErr instanceof Error ? pullErr.message : String(pullErr)}); ` +
-            `falling back to pushing it`,
-          "warn"
-        );
+        const detail = pullErr instanceof Error ? pullErr.message : String(pullErr);
+        // A 403 here is almost always the API token missing Sys.Modify. Say so
+        // — "Permission check failed" on its own sends people to the storage
+        // privileges, which are already correct if the push works at all.
+        const hint = /403|permission check failed/i.test(detail)
+          ? ` Proxmox refused the request: download-url needs Sys.Audit and Sys.Modify on path / ` +
+            `in addition to the storage privileges. Add those to ${env.PROXMOX_TOKEN_ID} under ` +
+            `Datacenter → Permissions, then retry — otherwise this falls back to a push, which is ` +
+            `what has been failing on large images.`
+          : "";
+        await run.say(`Pull transfer failed (${detail}).${hint} Falling back to pushing it.`, "warn");
       }
     } else {
       // Say this out loud: silently falling back to the path that keeps failing
