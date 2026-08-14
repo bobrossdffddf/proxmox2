@@ -29,6 +29,7 @@ import { audit } from "../audit";
 import {
   bufferSource,
   detectArchiveKind,
+  extractEntry,
   listEntries,
   openEntry,
   readEntry,
@@ -40,6 +41,7 @@ import {
   STREAM_CHUNK,
   TarInput,
 } from "../archive";
+import { findQemuImg, mergeToQcow2 } from "./qemu";
 import { registerPullArtifact, releasePullArtifact } from "./artifactServer";
 import { buildOvf, rewriteOvfHrefs } from "./ovfBuilder";
 import * as store from "./store";
@@ -247,6 +249,8 @@ export async function runImport(importId: number): Promise<void> {
     for (const [index, artifact] of artifacts.entries()) {
       const volid = await transferArtifact(run, settings, artifact, index, artifacts.length);
       uploadedVolids.push(volid);
+      // Scratch from a merge is dead weight once the node has the image.
+      if (artifact.cleanup) await artifact.cleanup().catch(() => undefined);
     }
     await run.assertNotCancelled();
 
@@ -400,23 +404,29 @@ interface Artifact {
   open: () => Readable | Promise<Readable>;
   /** True for the artifact the VM is created from. */
   primary: boolean;
+  /** Removes any scratch this artifact was built from, once it's been sent. */
+  cleanup?: () => Promise<void>;
 }
 
 /**
- * A split disk cannot go inside an OVA.
+ * A split VMDK has to be merged here, before anything is sent to Proxmox.
  *
- * Proxmox extracts only the single member named by `import-from` into a temp
- * directory and hands that to qemu-img — which then follows the descriptor to
- * extents that were left behind in the archive:
+ * Neither shape Proxmox accepts can carry a set of extents. Inside an OVA it
+ * extracts only the member named by `import-from`, so the descriptor arrives
+ * without its data:
  *
  *   extracting local:import/vm.ova/disk.vmdk
  *   qemu-img: Could not open '…/disk-s001.vmdk': No such file or directory
  *
- * Uploading the files individually puts the descriptor and every extent side by
- * side in the import directory, where qemu-img resolves them normally.
+ * Uploaded as separate files, it runs qemu-img over each one as it lands, and
+ * an extent on its own is not a valid image:
  *
- * Decided once, here, because packaging, transfer and create all have to agree
- * on it — createVm asks Proxmox to parse the OVF only under the "ova" strategy.
+ *   qemu-img: Could not open 'disk-s001.vmdk': Invalid argument
+ *
+ * So a split disk becomes a single qcow2 locally and travels as one file. The
+ * strategy is settled once, here, because packaging, transfer and create all
+ * have to agree on it — createVm asks Proxmox to parse the OVF only under the
+ * "ova" strategy, and there is no OVA in this case.
  */
 export function resolveStrategy(
   settings: ImportSettings,
@@ -428,9 +438,139 @@ export function resolveStrategy(
   return {
     settings: { ...settings, strategy: "disk" },
     note:
-      `This disk is split across ${extents} extent(s), which Proxmox cannot extract from inside ` +
-      `an OVA. Sending the descriptor and its extents as separate files instead.`,
+      `This disk is split across ${extents} extent(s). Proxmox cannot read a split VMDK in either ` +
+      `form, so it will be merged into a single image here before anything is uploaded.`,
   };
+}
+
+/**
+ * Extract a split disk's descriptor and extents, merge them into one qcow2, and
+ * return it as the sole artifact.
+ *
+ * Scratch usage peaks at the extents plus the merged image, then drops to just
+ * the merged image — the extents are deleted the moment qemu-img is done with
+ * them, before the upload starts, since the upload is the slow part and there's
+ * no reason to hold 10 GB through it.
+ */
+async function mergeSplitDisk(
+  run: Run,
+  uploadPath: string,
+  kind: ArchiveKind,
+  inspection: BundleInspection,
+  settings: ImportSettings,
+  entryFor: (file: BundleFile) => ArchiveEntry,
+  renames: Map<string, string>
+): Promise<Artifact[]> {
+  const qemuImg = await findQemuImg();
+  if (!qemuImg) {
+    throw new Error(
+      "This disk is split across multiple extents and has to be merged before Proxmox can read it, " +
+        "but qemu-img is not present in the backend image. Rebuild the backend (docker compose build " +
+        "backend) to pick it up."
+    );
+  }
+
+  const descriptor = inspection.files.find((f) => f.role === "disk");
+  if (!descriptor) throw new Error("Split disk has extents but no descriptor to tie them together");
+
+  const extents = inspection.files.filter((f) => f.role === "disk-extent");
+  const scratch = path.join(path.dirname(uploadPath), `job-${settings.vmid}-merge`);
+  const extentBytes = extents.reduce((sum, f) => sum + f.size, 0) + descriptor.size;
+
+  // Extracting and merging both need room. The merged image is at worst the
+  // size of the extents, so budget for holding both at once.
+  await assertRoomForMerge(run, path.dirname(uploadPath), extentBytes * 2);
+
+  await fs.promises.rm(scratch, { recursive: true, force: true });
+  await fs.promises.mkdir(scratch, { recursive: true });
+
+  try {
+    await run.say(`Extracting ${extents.length} extent(s) — ${formatBytes(extentBytes)} — to merge them`);
+
+    // The descriptor names its extents by filename, so both sides have to use
+    // the renamed forms or qemu-img will look for files that aren't there.
+    const rewritten = await rewriteDescriptorIfNeeded(run, uploadPath, kind, entryFor(descriptor), descriptor, renames);
+    const descriptorPath = path.join(scratch, descriptor.flatName);
+    if (rewritten) {
+      await pipelineToFile(await rewritten.open(), descriptorPath);
+    } else {
+      await extractEntry(uploadPath, kind, entryFor(descriptor), descriptorPath);
+    }
+
+    for (const [index, extent] of extents.entries()) {
+      await run.assertNotCancelled();
+      await extractEntry(uploadPath, kind, entryFor(extent), path.join(scratch, extent.flatName));
+      detach(store.setProgress(run.importId, 2 + Math.floor(((index + 1) / extents.length) * 3)));
+    }
+
+    const outName = safeFilename(`wcta-import-${settings.vmid}.qcow2`, settings.vmid);
+    const outPath = path.join(scratch, outName);
+    await run.say(`Merging into a single image with qemu-img — this runs at disk speed`);
+
+    let lastLogged = 0;
+    const merged = await mergeToQcow2(qemuImg, descriptorPath, outPath, (percent) => {
+      detach(store.setProgress(run.importId, 5 + Math.floor((percent / 100) * 5)));
+      if (percent >= lastLogged + 25 && percent < 100) {
+        lastLogged = percent;
+        detach(store.appendLog(run.importId, "info", `Merged ${percent}%`));
+      }
+    });
+
+    await run.say(
+      `Merged ${extents.length} extent(s) into ${outName} — ${formatBytes(merged.size)} in ${merged.seconds}s`
+    );
+
+    // The extents have served their purpose; the upload doesn't need them.
+    for (const extent of extents) {
+      await fs.promises.rm(path.join(scratch, extent.flatName), { force: true }).catch(() => undefined);
+    }
+    await fs.promises.rm(descriptorPath, { force: true }).catch(() => undefined);
+
+    return [
+      {
+        filename: outName,
+        bytes: merged.size,
+        open: () => fs.createReadStream(outPath, { highWaterMark: STREAM_CHUNK }),
+        primary: true,
+        cleanup: () => fs.promises.rm(scratch, { recursive: true, force: true }),
+      },
+    ];
+  } catch (err) {
+    await fs.promises.rm(scratch, { recursive: true, force: true }).catch(() => undefined);
+    throw err;
+  }
+}
+
+/** Write a stream to a path, awaiting completion. */
+async function pipelineToFile(source: Readable, destPath: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const sink = fs.createWriteStream(destPath);
+    source.on("error", reject);
+    sink.on("error", reject);
+    sink.on("finish", () => resolve());
+    source.pipe(sink);
+  });
+}
+
+/** Refuse to start a merge that can't finish, rather than dying at 90%. */
+async function assertRoomForMerge(run: Run, dir: string, needed: number): Promise<void> {
+  let free: number;
+  try {
+    const stats = await fs.promises.statfs(dir);
+    free = Number(stats.bavail) * Number(stats.bsize);
+  } catch {
+    await run.say("Could not read free space in the staging area; attempting the merge anyway", "warn");
+    return;
+  }
+
+  await run.say(`Merging needs about ${formatBytes(needed)} of scratch space; ${formatBytes(free)} free`);
+  if (free < needed) {
+    throw new Error(
+      `Not enough room to merge the split disk: ${formatBytes(free)} free, and the merge needs about ` +
+        `${formatBytes(needed)} (the extents plus the merged image). Free space on the staging disk ` +
+        `and retry — the uploaded bundle is kept, so it won't need uploading again.`
+    );
+  }
 }
 
 async function packageBundle(
@@ -476,15 +616,19 @@ async function packageBundle(
   }
 
   if (settings.strategy === "disk") {
-    // Each file on its own, straight out of the archive, so the extents land
-    // beside the descriptor for qemu-img to follow.
+    // A split disk can't be uploaded piecemeal — Proxmox validates each file it
+    // receives, and an extent alone isn't a valid image. Merge it first.
+    if (inspection.files.some((f) => f.role === "disk-extent")) {
+      return mergeSplitDisk(run, uploadPath, kind, inspection, settings, entryFor, renames);
+    }
+
+    // Otherwise each disk goes up on its own, straight out of the archive.
     const artifacts: Artifact[] = [];
     for (const file of disks) {
-      const rewritten = await rewriteDescriptorIfNeeded(run, uploadPath, kind, entryFor(file), file, renames);
       artifacts.push({
         filename: file.flatName,
-        bytes: rewritten ? rewritten.size : file.size,
-        open: rewritten ? rewritten.open : () => openEntry(uploadPath, kind, entryFor(file)),
+        bytes: file.size,
+        open: () => openEntry(uploadPath, kind, entryFor(file)),
         primary: file.role === "disk",
       });
     }
