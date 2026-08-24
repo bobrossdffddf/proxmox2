@@ -40,6 +40,9 @@ export interface SessionRow {
   cleaned_up_at: Date | null;
   extended_minutes: number;
   notes: string | null;
+  demo_active: boolean;
+  demo_title: string | null;
+  demo_started_at: Date | null;
 }
 
 export async function createPendingSession(opts: {
@@ -135,15 +138,17 @@ export async function markSessionCleaning(id: number): Promise<void> {
 }
 
 export async function markSessionStopped(id: number): Promise<void> {
+  // Clearing demo_active here keeps a finished demo from lingering in the
+  // one-live-demo slot after its VM is gone.
   await query(
-    `UPDATE sessions SET status='stopped', cleaned_up_at=NOW() WHERE id=$1`,
+    `UPDATE sessions SET status='stopped', cleaned_up_at=NOW(), demo_active=FALSE WHERE id=$1`,
     [id]
   );
 }
 
 export async function markCleanupFailed(id: number, reason: string): Promise<void> {
   await query(
-    `UPDATE sessions SET status='cleanup_failed', failure_reason=$2, cleaned_up_at=NOW() WHERE id=$1`,
+    `UPDATE sessions SET status='cleanup_failed', failure_reason=$2, cleaned_up_at=NOW(), demo_active=FALSE WHERE id=$1`,
     [id, reason]
   );
 }
@@ -214,6 +219,69 @@ export async function listAllLiveSessions(): Promise<SessionRow[]> {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Demo mode
+//
+// An admin can flip one of their own running sessions into a live demo. Every
+// signed-in user then gets a read-only spectator link to it. Exactly one demo
+// can be live at a time - the sessions_single_demo_unique partial index in the
+// schema enforces that at the database level, and startDemo switches the
+// previous one off first rather than relying on the caller to remember.
+// ---------------------------------------------------------------------------
+
+export interface DemoView {
+  sessionId: string;
+  templateName: string;
+  title: string | null;
+  host: string;
+  startedAt: Date | null;
+}
+
+export async function startDemo(sessionId: number, title: string | null): Promise<SessionRow | null> {
+  await query(`UPDATE sessions SET demo_active=FALSE WHERE demo_active AND id <> $1`, [sessionId]);
+  return one<SessionRow>(
+    `UPDATE sessions
+        SET demo_active = TRUE,
+            demo_title = $2,
+            demo_started_at = COALESCE(demo_started_at, NOW())
+      WHERE id = $1 AND status = 'running'
+      RETURNING *`,
+    [sessionId, title]
+  );
+}
+
+export async function stopDemo(sessionId: number): Promise<void> {
+  await query(
+    `UPDATE sessions SET demo_active=FALSE, demo_title=NULL, demo_started_at=NULL WHERE id=$1`,
+    [sessionId]
+  );
+}
+
+/**
+ * The one live demo, if there is one. Scoped to `running` so a demo whose VM
+ * has since been stopped or expired stops being advertised on the dashboard
+ * even if nobody remembered to switch it off.
+ */
+export async function getLiveDemo(): Promise<(SessionRow & { username: string }) | null> {
+  return one<SessionRow & { username: string }>(
+    `SELECT s.*, u.username
+       FROM sessions s
+       JOIN users u ON u.id = s.user_id
+      WHERE s.demo_active AND s.status = 'running'
+      LIMIT 1`
+  );
+}
+
+export function demoView(s: SessionRow & { username: string }): DemoView {
+  return {
+    sessionId: s.public_id,
+    templateName: s.template_name,
+    title: s.demo_title,
+    host: s.username,
+    startedAt: s.demo_started_at,
+  };
+}
+
 export function publicView(s: SessionRow) {
   return {
     id: s.public_id,
@@ -230,6 +298,23 @@ export function publicView(s: SessionRow) {
     guestPassword: s.guest_password,
     extendedMinutes: s.extended_minutes ?? 0,
     notes: s.notes,
+    demoActive: s.demo_active ?? false,
+    demoTitle: s.demo_title ?? null,
+  };
+}
+
+/**
+ * What a spectator is allowed to see. Watching someone's screen is one thing;
+ * being handed their VM's login is another, and demo spectators are ordinary
+ * students. Credentials and debrief notes are stripped here rather than merely
+ * hidden in the UI.
+ */
+export function spectatorView(s: SessionRow) {
+  return {
+    ...publicView(s),
+    guestUsername: null,
+    guestPassword: null,
+    notes: null,
   };
 }
 

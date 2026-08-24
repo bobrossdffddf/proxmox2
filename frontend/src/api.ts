@@ -111,6 +111,10 @@ export interface StagingTarget {
   poolSize: number;
   currentReady: number;
   currentLive: number;
+  lastError?: string | null;
+  lastErrorAt?: string | null;
+  lastSuccessAt?: string | null;
+  consecutiveFailures?: number;
 }
 
 export interface Announcement {
@@ -175,6 +179,22 @@ export interface TileTemplate {
   cpu_cores: number;
   memory_mb: number;
   ready_count: number;
+  /** Warm VMs mid-clone. Distinguishes "genuinely warming" from "stuck". */
+  pending_count: number;
+  /** True once staging has failed repeatedly and nothing warm is available. */
+  stalled: boolean;
+  /** Admins get the raw Proxmox error; students get a neutral message. */
+  staging_error: string | null;
+  staging_failures: number;
+}
+
+/** The one live demo an admin is broadcasting, if any. */
+export interface LiveDemo {
+  sessionId: string;
+  templateName: string;
+  title: string | null;
+  host: string;
+  startedAt: string | null;
 }
 
 export interface AdminStats {
@@ -359,6 +379,8 @@ export interface SessionView {
   extendedMinutes: number;
   notes: string | null;
   isOwner?: boolean;
+  demoActive?: boolean;
+  demoTitle?: string | null;
 }
 
 export const api = {
@@ -399,6 +421,13 @@ export const api = {
     }),
   announcements: () => request<Announcement[]>("/api/announcements"),
 
+  liveDemo: () => request<LiveDemo | null>("/api/vm/demo"),
+  setDemoMode: (publicId: string, active: boolean, title?: string) =>
+    request<{ ok: true; demoActive: boolean }>(`/api/vm/sessions/${publicId}/demo`, {
+      method: "POST",
+      body: JSON.stringify({ active, title }),
+    }),
+
   adminUsers: () => request<AdminUser[]>("/api/admin/users"),
   createUser: (payload: { username: string; password: string; role: string; maxVms: number; allowedTemplates: string }) => request<AdminUser>("/api/admin/users", { method: "POST", body: JSON.stringify(payload) }),
   updateUser: (id: number, payload: { role?: string; maxVms?: number; allowedTemplates?: string }) =>
@@ -424,6 +453,8 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ poolSize }),
     }),
+  retryStaging: (templateId: string) =>
+    request<{ ok: true }>(`/api/admin/staging-targets/${templateId}/retry`, { method: "POST" }),
   destroyStagedVm: (id: number) =>
     request<{ ok: true }>(`/api/admin/staged/${id}`, { method: "DELETE" }),
   forgetStagedVm: (id: number) =>

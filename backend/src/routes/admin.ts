@@ -13,11 +13,12 @@ import { audit } from "../services/audit";
 import { refreshImportedTemplates } from "../services/importedTemplates";
 import { getSessionById, listAllLiveSessions, markSessionStopped } from "../services/sessionManager";
 import { proxmox } from "../services/proxmox";
-import { ensureAllStagedVms } from "../services/stagingMaintainer";
 import { cleanupQueue } from "../jobs/queues";
 import { deleteStagedVm, getStagedVmById, listStagedVms } from "../services/staging";
 import { releaseVmid } from "../services/vmidPool";
 import { listStagingTargets, setStagingPoolSize } from "../services/stagingSettings";
+import { clearStagingHealth, listStagingHealth } from "../services/stagingHealth";
+import { ensureAllStagedVms, ensureStagedVm } from "../services/stagingMaintainer";
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -447,7 +448,43 @@ router.post("/staged/ensure", async (req, res) => {
 });
 
 router.get("/staging-targets", async (_req, res) => {
-  res.json(await listStagingTargets());
+  const targets = await listStagingTargets();
+  const health = await listStagingHealth();
+  // The pool size on its own does not explain a template that never fills.
+  // Hand the admin the last staging error alongside the target so the two are
+  // read together.
+  res.json(
+    targets.map((target) => {
+      const row = health.get(target.templateId);
+      return {
+        ...target,
+        lastError: row?.last_error ?? null,
+        lastErrorAt: row?.last_error_at ?? null,
+        lastSuccessAt: row?.last_success_at ?? null,
+        consecutiveFailures: row?.consecutive_failures ?? 0,
+      };
+    })
+  );
+});
+
+/**
+ * Clear a template's recorded staging failures and immediately try again.
+ * This is the "it's stuck on Warming up" button: it drops the stall record so
+ * the tile stops accusing the image, and kicks the maintainer, which will also
+ * discard any wedged BullMQ job holding the slot.
+ */
+router.post("/staging-targets/:templateId/retry", async (req, res) => {
+  const template = getTemplates().find((item) => item.id === req.params.templateId);
+  if (!template) throw new HttpError(404, "template not found");
+
+  await clearStagingHealth(template.id);
+  await ensureStagedVm(template.id);
+  await audit({
+    action: "admin.retry_staging",
+    details: { templateId: template.id },
+    ipAddress: req.ip,
+  });
+  res.json({ ok: true });
 });
 
 const stagingPoolSchema = z.object({

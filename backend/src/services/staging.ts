@@ -15,6 +15,8 @@ export interface StagedVmRow {
   guest_password: string | null;
   status: "queued" | "provisioning" | "running" | "failed";
   failure_reason: string | null;
+  created_at: Date;
+  updated_at: Date;
 }
 
 export async function claimReadyStagedVm(templateId: string): Promise<StagedVmRow | null> {
@@ -63,7 +65,7 @@ export async function getStagedVmById(id: number): Promise<StagedVmRow | null> {
 }
 
 export async function insertStagedVm(
-  data: Omit<StagedVmRow, "id" | "guest_ip" | "status" | "failure_reason">
+  data: Omit<StagedVmRow, "id" | "guest_ip" | "status" | "failure_reason" | "created_at" | "updated_at">
 ): Promise<StagedVmRow> {
   const row = await one<StagedVmRow>(
     `INSERT INTO staged_vms

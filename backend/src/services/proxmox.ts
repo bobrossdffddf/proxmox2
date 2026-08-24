@@ -278,6 +278,28 @@ export class ProxmoxClusterClient {
     throw new Error(`Proxmox task ${upid} timed out`);
   }
 
+  /**
+   * Size a freshly cloned VM and give it a sane performance profile.
+   *
+   * Cores and memory are the obvious part. The rest matters just as much for
+   * how the VM feels in a browser console, and a linked clone inherits all of
+   * it from whatever the template happened to be built with:
+   *
+   *   cpu     - `host` instead of Proxmox's `kvm64` default. kvm64 masks
+   *             AES-NI/AVX and reports a Pentium-era feature set; Windows in
+   *             particular crawls on it.
+   *   balloon - 0, so the host cannot claw back guest RAM mid-session and
+   *             leave the guest swapping.
+   *   vga     - `std` with real video memory, so a 1080p desktop repaints in
+   *             one pass instead of banding down the screen.
+   *   sockets - 1, so the guest sees one package and does not pay
+   *             NUMA-crossing latency for nothing.
+   *   agent   - kept on; provisioning already depends on it for the guest IP.
+   *
+   * Every one of these is overridable through env (VM_CPU_TYPE, VM_VGA_TYPE,
+   * VM_VGA_MEMORY_MB, VM_SOCKETS, VM_DISABLE_BALLOON) for clusters with
+   * mismatched CPUs or a migration requirement.
+   */
   async setResources(opts: {
     node: string;
     vmId: number;
@@ -287,11 +309,38 @@ export class ProxmoxClusterClient {
     const params = new URLSearchParams();
     params.append("cores", String(opts.cores));
     params.append("memory", String(opts.memoryMb));
-    await this.clientFor(opts.node).put(
-      `/nodes/${opts.node}/qemu/${opts.vmId}/config`,
-      params.toString(),
-      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
-    );
+    params.append("sockets", String(env.VM_SOCKETS));
+
+    if (env.VM_CPU_TYPE) params.append("cpu", env.VM_CPU_TYPE);
+    if (env.VM_DISABLE_BALLOON) params.append("balloon", "0");
+    if (env.VM_VGA_TYPE) {
+      params.append("vga", `${env.VM_VGA_TYPE},memory=${env.VM_VGA_MEMORY_MB}`);
+    }
+    params.append("agent", "1");
+
+    try {
+      await this.clientFor(opts.node).put(
+        `/nodes/${opts.node}/qemu/${opts.vmId}/config`,
+        params.toString(),
+        { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+      );
+    } catch (err) {
+      // A node that rejects one of the tuning keys (an older Proxmox, a CPU
+      // model it will not accept) must not take the whole clone down with it.
+      // Fall back to the two settings the VM genuinely cannot boot without.
+      logger.warn(
+        { node: opts.node, vmId: opts.vmId, err: String(err) },
+        "full VM tuning rejected - falling back to cores/memory only"
+      );
+      const minimal = new URLSearchParams();
+      minimal.append("cores", String(opts.cores));
+      minimal.append("memory", String(opts.memoryMb));
+      await this.clientFor(opts.node).put(
+        `/nodes/${opts.node}/qemu/${opts.vmId}/config`,
+        minimal.toString(),
+        { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+      );
+    }
   }
 
 

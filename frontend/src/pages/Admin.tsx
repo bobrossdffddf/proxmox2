@@ -306,6 +306,17 @@ export function Admin() {
     }
   };
 
+  const retryStaging = async (target: StagingTarget) => {
+    try {
+      await api.retryStaging(target.templateId);
+      setMessage({ kind: "ok", text: `Retrying staging for ${target.templateName}.` });
+      await loadStagingTargets();
+      await loadStaged();
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof Error ? err.message : "Retry failed" });
+    }
+  };
+
   const destroyStagedVm = async (vm: StagedVm) => {
     if (!confirm(`Destroy staged VM ${vm.proxmox_vmid}?`)) return;
     try {
@@ -655,10 +666,25 @@ export function Admin() {
               ) : (
                 <div className="admin-session-list">
                   {stagingTargets.map((target) => (
-                    <div key={target.templateId} className="staging-target-row">
+                    <div
+                      key={target.templateId}
+                      className={`staging-target-row ${target.lastError ? "faulted" : ""}`}
+                    >
                       <div>
                         <div className="name">{target.templateName}</div>
                         <div className="meta">{target.nodes.join(", ")} · {target.currentLive} live staged VM(s)</div>
+                        {target.lastError && (
+                          <div className="staging-fault">
+                            <strong>
+                              Staging failing
+                              {target.consecutiveFailures ? ` (${target.consecutiveFailures}×)` : ""}
+                            </strong>
+                            <span>{target.lastError}</span>
+                            {target.lastErrorAt && (
+                              <span className="meta">last tried {new Date(target.lastErrorAt).toLocaleString()}</span>
+                            )}
+                          </div>
+                        )}
                       </div>
                       <label>
                         <span>Ready per node</span>
@@ -670,7 +696,16 @@ export function Admin() {
                           onChange={(e) => updateLocalStagingTarget(target.templateId, Number(e.target.value))}
                         />
                       </label>
-                      <button onClick={() => saveStagingTarget(target)}>Save</button>
+                      <div className="row-actions">
+                        <button onClick={() => saveStagingTarget(target)}>Save</button>
+                        <button
+                          className={target.lastError ? "primary" : ""}
+                          title="Clear the recorded failures and try staging this image again now"
+                          onClick={() => retryStaging(target)}
+                        >
+                          Retry
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>

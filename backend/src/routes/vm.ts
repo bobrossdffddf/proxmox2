@@ -20,11 +20,16 @@ import { proxmox } from "../services/proxmox";
 import {
   countActiveSessions,
   createRunningSessionFromStaged,
+  demoView,
   extendSession,
+  getLiveDemo,
   getSessionByPublicId,
   listActiveSessionsForUser,
   publicView,
   setSessionNotes,
+  spectatorView,
+  startDemo,
+  stopDemo,
   touchHeartbeat,
 } from "../services/sessionManager";
 import { claimReadyStagedVm } from "../services/staging";
@@ -140,12 +145,79 @@ router.get("/sessions", async (req, res) => {
   res.json(rows.map(publicView));
 });
 
+/**
+ * The live demo, if an admin has one running. Every signed-in user may ask;
+ * the answer is a spectator link, never credentials.
+ */
+router.get("/demo", async (_req, res) => {
+  const demo = await getLiveDemo();
+  res.json(demo ? demoView(demo) : null);
+});
+
+const demoSchema = z.object({
+  active: z.boolean(),
+  title: z.string().max(120).optional(),
+});
+
+/**
+ * Toggle demo mode on one of your own running sessions. Admin only: this
+ * hands every student in the club a live view of the screen, so it is not
+ * something a student can switch on for themselves, and not something an
+ * admin can switch on for somebody else's session.
+ */
+router.post("/sessions/:publicId/demo", async (req, res) => {
+  const auth = (req as unknown as AuthedRequest).auth;
+  if (auth.role !== "admin") throw new HttpError(403, "admin only");
+
+  const parse = demoSchema.safeParse(req.body);
+  if (!parse.success) throw new HttpError(400, "active (boolean) required");
+
+  const s = await getSessionByPublicId(req.params.publicId);
+  if (!s || s.user_id !== auth.sub) throw new HttpError(404, "not found");
+
+  if (!parse.data.active) {
+    await stopDemo(s.id);
+    await audit({
+      userId: auth.sub,
+      username: auth.username,
+      action: "demo.stopped",
+      sessionId: s.id,
+      ipAddress: req.ip,
+    });
+    res.json({ ok: true, demoActive: false });
+    return;
+  }
+
+  if (s.status !== "running") throw new HttpError(409, "Session is not running");
+
+  const updated = await startDemo(s.id, parse.data.title?.trim() || null);
+  if (!updated) throw new HttpError(409, "Session could not be put into demo mode");
+
+  await audit({
+    userId: auth.sub,
+    username: auth.username,
+    action: "demo.started",
+    sessionId: s.id,
+    ipAddress: req.ip,
+    details: { templateId: s.template_id, title: parse.data.title ?? null },
+  });
+  res.json({ ok: true, demoActive: true });
+});
+
 router.get("/sessions/:publicId", async (req, res) => {
   const auth = (req as unknown as AuthedRequest).auth;
   const s = await getSessionByPublicId(req.params.publicId);
-  // Admins may look up any session so they can spectate a student's console.
-  if (!s || (s.user_id !== auth.sub && auth.role !== "admin")) throw new HttpError(404, "not found");
-  res.json({ ...publicView(s), isOwner: s.user_id === auth.sub });
+  if (!s) throw new HttpError(404, "not found");
+
+  const isOwner = s.user_id === auth.sub;
+  // Two kinds of non-owner may look at a session: an admin spectating a
+  // student, and anyone at all watching a session the admin has put into demo
+  // mode. Both get the spectator view, which carries no VM credentials.
+  const mayWatch = isOwner || auth.role === "admin" || (s.demo_active && s.status === "running");
+  if (!mayWatch) throw new HttpError(404, "not found");
+
+  const view = isOwner ? publicView(s) : spectatorView(s);
+  res.json({ ...view, isOwner });
 });
 
 router.post("/sessions/:publicId/extend", async (req, res) => {

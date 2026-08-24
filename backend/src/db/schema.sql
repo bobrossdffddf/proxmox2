@@ -177,3 +177,33 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS max_vms INT NOT NULL DEFAULT 1;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_templates TEXT NOT NULL DEFAULT '*';
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS extended_minutes INT NOT NULL DEFAULT 0;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS notes TEXT;
+
+-- ---------------------------------------------------------------------------
+-- Demo mode. An admin can flip one of their own running sessions into a live
+-- demo; every signed-in user then gets a read-only spectator link to it.
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS demo_active     BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS demo_title      VARCHAR(120);
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS demo_started_at TIMESTAMPTZ;
+
+-- Only one demo can be live at a time.
+CREATE UNIQUE INDEX IF NOT EXISTS sessions_single_demo_unique
+  ON sessions((demo_active))
+  WHERE demo_active;
+
+-- ---------------------------------------------------------------------------
+-- Staging health. A template whose warm pool cannot be filled used to show
+-- "Warming up" on the tile forever with the reason buried in the backend log.
+-- We record the last staging outcome per template so the tile, and the admin
+-- staging tab, can say what actually went wrong.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS template_staging_health (
+  template_id          VARCHAR(64) PRIMARY KEY,
+  consecutive_failures INT NOT NULL DEFAULT 0,
+  last_error           TEXT,
+  last_error_at        TIMESTAMPTZ,
+  last_success_at      TIMESTAMPTZ,
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

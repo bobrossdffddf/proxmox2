@@ -55,17 +55,26 @@ const ICON_PATHS: Record<TileTemplate["icon"], JSX.Element> = {
 
 export const VMTile = memo(function VMTile({ tpl, ordinal, busy, onLaunch }: Props) {
   const ready = tpl.ready_count > 0;
+  // A template whose staging keeps failing used to be indistinguishable from
+  // one that was merely between clones: both said "Warming up", forever. Now
+  // the tile says so, and stops pretending it is about to become available.
+  const stalled = tpl.stalled && !ready;
+  const disabled = busy || stalled;
+
+  const launch = () => { if (!disabled) onLaunch(tpl.id); };
+
   return (
     <div
-      className={`tile ticked ${busy ? "busy" : ""}`}
-      onClick={() => !busy && onLaunch(tpl.id)}
+      className={`tile ticked ${busy ? "busy" : ""} ${stalled ? "stalled" : ""}`}
+      onClick={launch}
       role="button"
+      aria-disabled={stalled}
       tabIndex={0}
-      aria-label={`Launch ${tpl.name}`}
+      aria-label={stalled ? `${tpl.name} — unavailable` : `Launch ${tpl.name}`}
       onKeyDown={(e) => {
-        if ((e.key === "Enter" || e.key === " ") && !busy) {
+        if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          onLaunch(tpl.id);
+          launch();
         }
       }}
     >
@@ -88,6 +97,12 @@ export const VMTile = memo(function VMTile({ tpl, ordinal, busy, onLaunch }: Pro
         </div>
       )}
 
+      {stalled && tpl.staging_error && (
+        <div className="tile-fault" title={tpl.staging_error}>
+          {tpl.staging_error}
+        </div>
+      )}
+
       <div className="tile-foot">
         <span className="spec">
           {tpl.cpu_cores}C · {Math.round(tpl.memory_mb / 1024)}G · {tpl.protocol}
@@ -96,9 +111,17 @@ export const VMTile = memo(function VMTile({ tpl, ordinal, busy, onLaunch }: Pro
           <span className="avail ready" title={`${tpl.ready_count} warm VM(s) waiting`}>
             Ready now{tpl.ready_count > 1 ? ` ×${tpl.ready_count}` : ""}
           </span>
-        ) : (
-          <span className="avail cold" title="No warm VM staged — expect a spin-up wait">
+        ) : stalled ? (
+          <span className="avail fault" title={tpl.staging_error ?? "Staging is failing"}>
+            Unavailable
+          </span>
+        ) : tpl.pending_count > 0 ? (
+          <span className="avail cold" title={`${tpl.pending_count} VM(s) cloning and booting right now`}>
             Warming up
+          </span>
+        ) : (
+          <span className="avail cold" title="Nothing warm is staged yet — launching one will take a minute or two">
+            Not staged
           </span>
         )}
       </div>

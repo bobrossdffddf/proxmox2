@@ -73,13 +73,20 @@ export function createNoVncProxy() {
       const session = await getSessionByPublicId(sessionPublicId);
       if (!session) throw new Error("Session not found");
       const isOwner = session.user_id === decoded.sub;
-      // Admins may attach to any running session, but only as spectators:
-      // their input is stripped from the RFB stream below.
-      const spectator = !isOwner && decoded.role === "admin";
+      // Two kinds of non-owner may attach, both strictly as spectators - their
+      // input is dropped from the RFB stream by relayFiltered() below:
+      //   - an admin, who may attach to any running session; and
+      //   - anybody, when the admin running the session has switched on demo
+      //     mode, which is the whole point of demo mode.
+      const isDemoWatcher = !isOwner && session.demo_active === true;
+      const spectator = !isOwner && (decoded.role === "admin" || isDemoWatcher);
       if (!isOwner && !spectator) throw new Error("Forbidden");
       if (session.status !== "running") throw new Error("Session not running");
       if (spectator) {
-        logger.info({ vmId: session.proxmox_vmid, adminId: decoded.sub }, "admin spectating session");
+        logger.info(
+          { vmId: session.proxmox_vmid, watcherId: decoded.sub, demo: isDemoWatcher },
+          isDemoWatcher ? "user watching demo session" : "admin spectating session"
+        );
       }
 
       const { ticket, port } = await proxmox.createVncProxy(session.proxmox_node, session.proxmox_vmid);

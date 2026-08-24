@@ -47,7 +47,7 @@ export default function App() {
                : <Navigate to="/login" replace />
         } />
         <Route path="/console/:sessionId" element={
-          user ? <ConsoleWrapper /> : <Navigate to="/login" replace />
+          user ? <ConsoleWrapper user={user} /> : <Navigate to="/login" replace />
         } />
         <Route path="/admin" element={user?.role === "admin" ? <Admin /> : <Navigate to="/" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
@@ -56,7 +56,7 @@ export default function App() {
   );
 }
 
-function ConsoleWrapper() {
+function ConsoleWrapper({ user }: { user: AuthUser }) {
   const navigate = useNavigate();
-  return <Console onExit={() => navigate("/")} />;
+  return <Console user={user} onExit={() => navigate("/")} />;
 }

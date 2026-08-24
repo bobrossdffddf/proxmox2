@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Announcement, api, AuthUser, SessionView, TileTemplate } from "../api";
+import { Announcement, api, AuthUser, LiveDemo, SessionView, TileTemplate } from "../api";
 import { formatRemaining, TopClock, Wordmark } from "../components/Brand";
 import { VMTile } from "../components/VMTile";
 
@@ -42,6 +42,7 @@ export function Dashboard({ user, onSignOut }: Props) {
   const [templates, setTemplates] = useState<TileTemplate[]>([]);
   const [sessions, setSessions] = useState<SessionView[]>([]);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [demo, setDemo] = useState<LiveDemo | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -77,8 +78,15 @@ export function Dashboard({ user, onSignOut }: Props) {
     );
   }, []);
 
+  // Demo mode is something an admin flips on mid-class, so this has to appear
+  // without a reload. It rides the same visibility-gated interval as the rest.
+  const loadDemo = useCallback(() => {
+    api.liveDemo().then(setDemo).catch(() => undefined);
+  }, []);
+
   useEffect(() => {
     loadTemplates();
+    loadDemo();
     api.announcements().then(setAnnouncements).catch(() => undefined);
     refresh();
     // Only poll while the tab is visible; catch up immediately on return.
@@ -87,10 +95,10 @@ export function Dashboard({ user, onSignOut }: Props) {
     }, 3000);
     // Availability changes as staged VMs are claimed/refilled — refresh slower.
     const t = setInterval(() => {
-      if (!document.hidden) loadTemplates();
+      if (!document.hidden) { loadTemplates(); loadDemo(); }
     }, 15000);
     const onVisible = () => {
-      if (!document.hidden) { refresh(); loadTemplates(); }
+      if (!document.hidden) { refresh(); loadTemplates(); loadDemo(); }
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
@@ -98,7 +106,7 @@ export function Dashboard({ user, onSignOut }: Props) {
       clearInterval(t);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [refresh, loadTemplates]);
+  }, [refresh, loadTemplates, loadDemo]);
 
   // Tick the expiry countdowns while sessions are visible
   useEffect(() => {
@@ -165,6 +173,23 @@ export function Dashboard({ user, onSignOut }: Props) {
             </p>
           </div>
         </div>
+
+        {/* The admin running the demo is already looking at it — don't invite
+            them to watch themselves. */}
+        {demo && demo.host !== user.username && (
+          <div className="demo-live-banner">
+            <span className="demo-pill live">Live</span>
+            <div className="demo-live-copy">
+              <div className="name">{demo.title || `${demo.templateName} demo`}</div>
+              <div className="meta">
+                {demo.host} is demonstrating {demo.templateName}. You'll watch read-only.
+              </div>
+            </div>
+            <button className="primary" onClick={() => navigate(`/console/${demo.sessionId}`)}>
+              Watch demo
+            </button>
+          </div>
+        )}
 
         {announcements.length > 0 && (
           <div className="announcement-stack">

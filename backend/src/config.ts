@@ -45,6 +45,42 @@ const envSchema = z.object({
   VM_ID_RANGE_START: z.coerce.number().default(10000),
   VM_ID_RANGE_END: z.coerce.number().default(19999),
 
+  // -------------------------------------------------------------------------
+  // Guest performance. These are applied to every clone alongside cores and
+  // memory. The defaults are what a browser-rendered desktop actually needs;
+  // Proxmox's own defaults are tuned for live migration between mismatched
+  // hosts, which is not something a disposable practice VM ever does.
+  // -------------------------------------------------------------------------
+  /**
+   * QEMU CPU model. Proxmox defaults to `kvm64`, which hides AES-NI, AVX and
+   * most of the last decade of instructions from the guest - the single
+   * largest cause of "the VMs are slow", and brutal for Windows. `host` passes
+   * the physical CPU straight through. Set this to `kvm64` only if you need to
+   * live-migrate between nodes with different CPUs.
+   */
+  VM_CPU_TYPE: z.string().default("host"),
+  /**
+   * Turn memory ballooning off. With it on, the host reclaims guest RAM under
+   * pressure and the guest starts swapping while `free` still looks fine.
+   */
+  VM_DISABLE_BALLOON: z
+    .string()
+    .default("true")
+    .transform((v) => v.toLowerCase() === "true"),
+  /**
+   * Display adapter. `std` with real video memory is what keeps a 1080p+
+   * console from tearing and repainting in bands over VNC. Blank leaves the
+   * template's own setting alone.
+   */
+  VM_VGA_TYPE: z.string().default("std"),
+  /** Video memory in MB (Proxmox range 4-512). 16 covers 1080p, 32 covers 4K. */
+  VM_VGA_MEMORY_MB: z.coerce.number().min(4).max(512).default(32),
+  /**
+   * Pin every clone to one socket. Multi-socket topology on a desktop guest
+   * buys nothing and costs NUMA-crossing latency.
+   */
+  VM_SOCKETS: z.coerce.number().min(1).max(4).default(1),
+
   CONFIG_DIR: z.string().default("/app/config"),
 
   // VM import pipeline. Uploaded bundles land in IMPORT_DIR, get repackaged

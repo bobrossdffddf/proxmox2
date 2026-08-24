@@ -32,6 +32,7 @@ import { createNoVncProxy } from "./rdp/novnc";
 import { startProvisioningWorker } from "./jobs/provisioningWorker";
 import { startCleanupWorker } from "./jobs/cleanupWorker";
 import { startInactivityMonitor } from "./jobs/inactivityMonitor";
+import { startStagingMonitor } from "./jobs/stagingMonitor";
 import { failInterruptedImports, startImportWorker } from "./jobs/importWorker";
 import { refreshImportedTemplates } from "./services/importedTemplates";
 import { ensureAllStagedVms } from "./services/stagingMaintainer";
@@ -127,6 +128,9 @@ async function main() {
   const cleaner = startCleanupWorker();
   const importer = startImportWorker();
   const sweeper = startInactivityMonitor();
+  // Keeps the warm pool topped up on a timer. Without this, a staging failure
+  // is permanent until someone restarts the backend or presses Refill.
+  const stagingSweeper = startStagingMonitor();
   await failInterruptedImports();
   await ensureAllStagedVms();
 
@@ -181,6 +185,7 @@ async function main() {
     logger.info({ signal }, "shutting down");
     server.close();
     clearInterval(sweeper);
+    clearInterval(stagingSweeper);
     await provisioner.close();
     await cleaner.close();
     await importer.close();

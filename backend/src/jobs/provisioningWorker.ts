@@ -19,6 +19,7 @@ import {
   markSessionRunning,
 } from "../services/sessionManager";
 import { insertStagedVm, markStagedProvisioning, markStagedRunning } from "../services/staging";
+import { recordStagingFailure, recordStagingSuccess } from "../services/stagingHealth";
 import { countAllLiveStagedVms } from "../services/staging";
 import { allocateVmid, releaseVmid } from "../services/vmidPool";
 import { cleanupQueue, ProvisioningJobData } from "./queues";
@@ -137,6 +138,7 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
           });
           await markStagedProvisioning(stagedRow.id);
           await markStagedRunning(stagedRow.id, ip);
+          await recordStagingSuccess(template.id);
           await audit({
             userId: null,
             action: "vm.staged",
@@ -201,6 +203,14 @@ export function startProvisioningWorker(): Worker<ProvisioningJobData> {
 
   worker.on("failed", (job, err) => {
     logger.warn({ jobId: job?.id, err: String(err) }, "provisioning job failed");
+    // Failures thrown by the pre-flight checks (unknown template, template
+    // VMID missing from every node, cluster at capacity) never reach the
+    // in-job catch, and those are exactly the ones that leave a tile stuck on
+    // "Warming up". Record every staging failure from here instead.
+    if (job?.data?.staged && job.data.templateId) {
+      void recordStagingFailure(job.data.templateId, err instanceof Error ? err.message : String(err))
+        .catch(() => undefined);
+    }
   });
 
   return worker;
