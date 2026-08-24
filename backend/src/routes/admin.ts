@@ -18,6 +18,11 @@ import { deleteStagedVm, getStagedVmById, listStagedVms } from "../services/stag
 import { releaseVmid } from "../services/vmidPool";
 import { listStagingTargets, setStagingPoolSize } from "../services/stagingSettings";
 import { clearStagingHealth, listStagingHealth } from "../services/stagingHealth";
+import {
+  destroyTemplateCompletely,
+  listManagedTemplates,
+  setTemplateHidden,
+} from "../services/templateAdmin";
 import { ensureAllStagedVms, ensureStagedVm } from "../services/stagingMaintainer";
 
 const router = Router();
@@ -445,6 +450,70 @@ router.post("/staged/ensure", async (req, res) => {
   await ensureAllStagedVms();
   await audit({ action: "admin.ensure_staging", ipAddress: req.ip });
   res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Image (template) management
+//
+// One view of the four things that have to agree for a tile to work: the tile
+// itself, the Proxmox template VM it clones from, the warm pool, and any live
+// clones. Deleting removes all four.
+// ---------------------------------------------------------------------------
+
+router.get("/templates", async (_req, res) => {
+  res.json(await listManagedTemplates());
+});
+
+const hiddenSchema = z.object({ hidden: z.boolean() });
+
+router.post("/templates/:id/hidden", async (req, res) => {
+  const parse = hiddenSchema.safeParse(req.body);
+  if (!parse.success) throw new HttpError(400, "hidden (boolean) required");
+
+  const template = getTemplates().find((t) => t.id === req.params.id)
+    ?? (await listManagedTemplates()).find((t) => t.id === req.params.id);
+  if (!template) throw new HttpError(404, "template not found");
+
+  await setTemplateHidden(req.params.id, parse.data.hidden, "toggled by an admin");
+  if (!parse.data.hidden) await ensureStagedVm(req.params.id);
+
+  await audit({
+    action: "admin.template_visibility",
+    details: { templateId: req.params.id, hidden: parse.data.hidden },
+    ipAddress: req.ip,
+  });
+  res.json({ ok: true });
+});
+
+/**
+ * Destroy an image and everything derived from it: live clones, the warm pool,
+ * the Proxmox template VM, and the tile.
+ *
+ * This runs inline rather than through a queue because the admin needs the
+ * per-VM result to act on a partial failure — and because the ordering matters
+ * (linked clones pin the template, so they must be gone before it can be
+ * deleted). With several clones it can take a minute or two.
+ */
+router.delete("/templates/:id", async (req, res) => {
+  const exists = (await listManagedTemplates()).some((t) => t.id === req.params.id);
+  if (!exists) throw new HttpError(404, "template not found");
+
+  try {
+    const report = await destroyTemplateCompletely(req.params.id);
+    await audit({
+      action: "admin.template_destroyed",
+      details: { ...report },
+      ipAddress: req.ip,
+    });
+    res.json({ ok: report.failed.length === 0, ...report });
+  } catch (err) {
+    await audit({
+      action: "admin.template_destroy_failed",
+      details: { templateId: req.params.id, error: String(err) },
+      ipAddress: req.ip,
+    });
+    throw new HttpError(500, String(err instanceof Error ? err.message : err));
+  }
 });
 
 router.get("/staging-targets", async (_req, res) => {

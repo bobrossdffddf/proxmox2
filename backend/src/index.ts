@@ -36,6 +36,7 @@ import { startStagingMonitor } from "./jobs/stagingMonitor";
 import { failInterruptedImports, startImportWorker } from "./jobs/importWorker";
 import { refreshImportedTemplates } from "./services/importedTemplates";
 import { ensureAllStagedVms } from "./services/stagingMaintainer";
+import { pruneTemplateOverrides, refreshHiddenTemplates } from "./services/templateAdmin";
 import { parse as parseUrl } from "url";
 
 /**
@@ -132,6 +133,10 @@ async function main() {
   // is permanent until someone restarts the backend or presses Refill.
   const stagingSweeper = startStagingMonitor();
   await failInterruptedImports();
+  // Load the hidden-template overlay before anything reads getTemplates(),
+  // or a retired image would be staged again on every boot.
+  await refreshHiddenTemplates();
+  await pruneTemplateOverrides();
   await ensureAllStagedVms();
 
   // 5. HTTP + WS

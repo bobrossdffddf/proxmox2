@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { AdminSession, AdminStats, AdminUser, Announcement, api, AuditLog, ResourceReport, SessionNote, StagedVm, StagingTarget } from "../api";
+import { AdminSession, AdminStats, AdminUser, Announcement, api, AuditLog, DestroyTemplateReport, ManagedTemplate, ResourceReport, SessionNote, StagedVm, StagingTarget } from "../api";
 import { TopClock, Wordmark } from "../components/Brand";
 import { ImportWizard } from "../components/ImportWizard";
 
-type Tab = "overview" | "users" | "sessions" | "resources" | "staging" | "import" | "announcements" | "notes" | "logs";
+type Tab = "overview" | "users" | "sessions" | "resources" | "images" | "staging" | "import" | "announcements" | "notes" | "logs";
 
 /**
  * Launches per day, last 30 days. Single-series column chart: one hue,
@@ -76,6 +76,62 @@ function BarList({ rows }: { rows: Array<{ label: string; value: number; detail?
   );
 }
 
+/**
+ * Deleting an image destroys real VMs, including any a student is working in
+ * right now, and it cannot be undone. A plain OK button is too easy to hit by
+ * accident on a row that also has a "Hide" next to it, so this one asks for
+ * the image's id to be typed out.
+ */
+function DestroyTemplateModal({ template, onCancel, onConfirm }: {
+  template: ManagedTemplate;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const [typed, setTyped] = useState("");
+  const matches = typed.trim() === template.id;
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <span className="k">Destroy image</span>
+        <h3>Delete {template.name}?</h3>
+        <p>This permanently destroys, on the Proxmox cluster:</p>
+        <ul className="destroy-list">
+          <li>
+            <b>{template.activeSessions}</b> running VM{template.activeSessions === 1 ? "" : "s"}
+            {template.activeSessions > 0 && " — anyone working in one loses it immediately"}
+          </li>
+          <li><b>{template.stagedCount}</b> warm VM{template.stagedCount === 1 ? "" : "s"} in the pool</li>
+          <li>
+            the template VM{template.templateVms.length === 1 ? "" : "s"}{" "}
+            {template.templateVms.map((vm) => `${vm.vmid} on ${vm.node}`).join(", ")}
+          </li>
+          <li>
+            the dashboard tile
+            {template.source === "yaml" && " (hidden rather than deleted — it is defined in templates.yaml)"}
+          </li>
+        </ul>
+        <p>
+          The image itself cannot be recovered afterwards. Type <code>{template.id}</code> to confirm.
+        </p>
+        <input
+          autoFocus
+          value={typed}
+          placeholder={template.id}
+          onChange={(e) => setTyped(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && matches) onConfirm(); }}
+        />
+        <div className="modal-actions">
+          <button onClick={onCancel}>Cancel</button>
+          <button className="danger" disabled={!matches} onClick={onConfirm}>
+            Destroy everything
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Admin() {
   const [tab, setTab] = useState<Tab>("overview");
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -84,6 +140,11 @@ export function Admin() {
   const [sessions, setSessions] = useState<AdminSession[]>([]);
   const [stagedVms, setStagedVms] = useState<StagedVm[]>([]);
   const [stagingTargets, setStagingTargets] = useState<StagingTarget[]>([]);
+  const [templates, setTemplates] = useState<ManagedTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [destroying, setDestroying] = useState<string | null>(null);
+  const [confirmDestroy, setConfirmDestroy] = useState<ManagedTemplate | null>(null);
+  const [destroyReport, setDestroyReport] = useState<DestroyTemplateReport | null>(null);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [resources, setResources] = useState<ResourceReport | null>(null);
   const [stats, setStats] = useState<AdminStats | null>(null);
@@ -123,6 +184,55 @@ export function Admin() {
 
   const loadStagingTargets = async () => {
     setStagingTargets(await api.stagingTargets());
+  };
+
+  const loadTemplates = async () => {
+    setTemplatesLoading(true);
+    try {
+      setTemplates(await api.managedTemplates());
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof Error ? err.message : "Failed to load images" });
+    } finally {
+      setTemplatesLoading(false);
+    }
+  };
+
+  const toggleTemplateHidden = async (template: ManagedTemplate) => {
+    try {
+      await api.setTemplateHidden(template.id, !template.hidden);
+      setMessage({
+        kind: "ok",
+        text: template.hidden ? `${template.name} is visible again.` : `${template.name} is hidden from students.`,
+      });
+      await loadTemplates();
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof Error ? err.message : "Failed to change visibility" });
+    }
+  };
+
+  const destroyTemplate = async (template: ManagedTemplate) => {
+    setConfirmDestroy(null);
+    setDestroying(template.id);
+    setDestroyReport(null);
+    try {
+      const report = await api.destroyTemplate(template.id);
+      setDestroyReport(report);
+      setMessage(
+        report.ok
+          ? {
+              kind: "ok",
+              text:
+                `${template.name}: destroyed ${report.clonesDeleted.length} clone(s) and ` +
+                `${report.templatesDeleted.length} template VM(s).`,
+            }
+          : { kind: "error", text: `${template.name}: ${report.failed.length} VM(s) could not be deleted.` }
+      );
+      await Promise.all([loadTemplates(), loadStaged(), loadSessions()]);
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof Error ? err.message : "Destroy failed" });
+    } finally {
+      setDestroying(null);
+    }
   };
 
   const loadAnnouncements = async () => {
@@ -394,6 +504,7 @@ export function Admin() {
             <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}>Users</button>
             <button className={tab === "sessions" ? "active" : ""} onClick={() => setTab("sessions")}>Sessions</button>
             <button className={tab === "resources" ? "active" : ""} onClick={() => setTab("resources")}>Resources</button>
+            <button className={tab === "images" ? "active" : ""} onClick={() => { setTab("images"); void loadTemplates(); }}>Images</button>
             <button className={tab === "staging" ? "active" : ""} onClick={() => setTab("staging")}>Staging</button>
             <button className={tab === "import" ? "active" : ""} onClick={() => setTab("import")}>Import</button>
             <button className={tab === "announcements" ? "active" : ""} onClick={() => setTab("announcements")}>Announce</button>
@@ -651,6 +762,139 @@ export function Admin() {
               </>
             )}
           </section>
+        ) : tab === "images" ? (
+          <>
+            <section className="admin-panel">
+              <div className="admin-log-toolbar">
+                <h2>Images</h2>
+                <div className="admin-toolbar-actions">
+                  <button onClick={() => void loadTemplates()}>Refresh</button>
+                  <button onClick={() => setTab("import")}>Import new image</button>
+                </div>
+              </div>
+              <p className="subtitle">
+                Every practice image, the Proxmox template VM it clones from, and
+                what is currently running off it. Deleting an image destroys its
+                clones, its warm pool, and the template VM itself.
+              </p>
+
+              {templatesLoading && templates.length === 0 ? (
+                <div className="empty">Reading the cluster…</div>
+              ) : templates.length === 0 ? (
+                <div className="empty">No images configured.</div>
+              ) : (
+                <div className="admin-session-list">
+                  {templates.map((template) => {
+                    const missing = template.templateVms.filter((vm) => vm.exists === false);
+                    const unknown = template.templateVms.filter((vm) => vm.exists === null);
+                    const busy = destroying === template.id;
+                    return (
+                      <div
+                        key={template.id}
+                        className={`template-row ${missing.length > 0 ? "faulted" : ""} ${template.hidden ? "hidden-row" : ""}`}
+                      >
+                        <div className="template-main">
+                          <div className="name">
+                            {template.name}
+                            <span className="template-tag">{template.source === "yaml" ? "templates.yaml" : "imported"}</span>
+                            {template.hidden && <span className="template-tag warn">hidden</span>}
+                          </div>
+                          <div className="meta">
+                            {template.id} · {template.protocol.toUpperCase()}:{template.port} ·{" "}
+                            {template.cpuCores}C · {Math.round(template.memoryMb / 1024)}G
+                          </div>
+
+                          <div className="template-vms">
+                            {template.templateVms.map((vm) => (
+                              <span
+                                key={`${vm.node}-${vm.vmid}`}
+                                className={`template-vm ${vm.exists === false ? "bad" : vm.exists === null ? "unknown" : "ok"}`}
+                                title={vm.error ?? `Template VM ${vm.vmid} on ${vm.node}`}
+                              >
+                                VMID {vm.vmid} · {vm.node}
+                                {vm.exists === false ? " · missing" : vm.exists === null ? " · unknown" : ""}
+                              </span>
+                            ))}
+                          </div>
+
+                          {missing.length > 0 && (
+                            <div className="staging-fault">
+                              <strong>Template VM missing</strong>
+                              <span>{missing.map((vm) => vm.error).filter(Boolean).join(" ")}</span>
+                              <span className="meta">
+                                Nothing can clone from this image until the VMID exists. Fix the
+                                VMID or delete the image.
+                              </span>
+                            </div>
+                          )}
+                          {missing.length === 0 && unknown.length > 0 && (
+                            <div className="meta">Could not reach Proxmox to verify the template VM.</div>
+                          )}
+                          {template.lastError && (
+                            <div className="staging-fault">
+                              <strong>
+                                Staging failing
+                                {template.consecutiveFailures ? ` (${template.consecutiveFailures}×)` : ""}
+                              </strong>
+                              <span>{template.lastError}</span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="template-counts">
+                          <span><b>{template.readyCount}</b> warm</span>
+                          <span><b>{template.activeSessions}</b> in use</span>
+                          <span><b>{template.poolSize}</b> target</span>
+                        </div>
+
+                        <div className="row-actions">
+                          <button onClick={() => void toggleTemplateHidden(template)} disabled={busy}>
+                            {template.hidden ? "Show" : "Hide"}
+                          </button>
+                          <button
+                            className="danger"
+                            disabled={busy}
+                            onClick={() => setConfirmDestroy(template)}
+                            title="Destroy this image, its clones and its Proxmox template VM"
+                          >
+                            {busy ? "Destroying…" : "Delete"}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
+            {destroyReport && (
+              <section className="admin-panel">
+                <div className="admin-log-toolbar">
+                  <h2>Last delete</h2>
+                  <button onClick={() => setDestroyReport(null)}>Dismiss</button>
+                </div>
+                <div className="destroy-report">
+                  <div>
+                    Tile {destroyReport.tileRemoved === "deleted" ? "deleted" : "hidden (defined in templates.yaml — remove the entry from the file to delete it for good)"}.
+                  </div>
+                  <div>
+                    Clones destroyed: {destroyReport.clonesDeleted.length === 0 ? "none" : destroyReport.clonesDeleted.map((vm) => `${vm.vmid} (${vm.kind})`).join(", ")}
+                  </div>
+                  <div>
+                    Template VMs destroyed: {destroyReport.templatesDeleted.length === 0 ? "none" : destroyReport.templatesDeleted.map((vm) => `${vm.vmid} on ${vm.node}`).join(", ")}
+                  </div>
+                  {destroyReport.failed.length > 0 && (
+                    <div className="staging-fault">
+                      <strong>Could not delete {destroyReport.failed.length} VM(s)</strong>
+                      {destroyReport.failed.map((vm) => (
+                        <span key={vm.vmid}>VMID {vm.vmid} on {vm.node}: {vm.error}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
+            )}
+          </>
         ) : tab === "staging" ? (
           <>
             <section className="admin-panel">
@@ -844,6 +1088,14 @@ export function Admin() {
             )}
           </section>
         )}
+
+      {confirmDestroy && (
+        <DestroyTemplateModal
+          template={confirmDestroy}
+          onCancel={() => setConfirmDestroy(null)}
+          onConfirm={() => void destroyTemplate(confirmDestroy)}
+        />
+      )}
       </main>
 
       {message && <div className={`toast ${message.kind}`}>{message.text}</div>}

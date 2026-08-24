@@ -111,6 +111,43 @@ Full walkthrough and requirements: [`docs/importing-vms.md`](docs/importing-vms.
    ```
 3. `docker compose restart backend`. The dashboard picks it up automatically — no rebuild needed.
 
+## Removing a practice image
+
+Go to **Admin → Images**. Every tile is listed with the Proxmox template VM it
+clones from, whether that VMID actually exists on the node it points at, how
+many warm and in-use clones it has, and the last staging error if it has one.
+
+- **Hide** takes the tile off the student dashboard and leaves everything else
+  alone. Reversible.
+- **Delete** destroys the image and everything derived from it: running clones,
+  the warm pool, and the Proxmox template VM. Clones are removed first, because
+  they are linked clones and Proxmox will not delete a template while one still
+  points at it. You are asked to type the image id to confirm, and get a
+  per-VM report afterwards.
+
+A tile defined in `config/templates.yaml` is hidden rather than deleted — the
+file is the source of truth and the config mount is read-only. Its VMs are
+still destroyed; remove the YAML entry to retire the tile for good.
+
+## How the console connects
+
+Two paths, picked automatically:
+
+- **Fast** — `guacd` speaks the guest's own protocol (RDP on 3389 for Windows,
+  a VNC server on 5900 for Linux) straight to the VM's IP. It sends drawing
+  operations rather than pixels, resizes the guest desktop to the browser
+  window, and gives you a real shared clipboard. This is the default.
+- **Compatible** — QEMU's display console through the Proxmox API. Works on any
+  VM at all, including one with no network or no guest OS, which makes it the
+  right fallback — but it re-encodes the framebuffer as images on the Proxmox
+  host and crosses an extra hop, so it is noticeably slower and has no
+  clipboard channel to the guest.
+
+If the fast path can't reach the guest, the console falls back on its own and
+says why. **Display → Auto/Force** in the console toolbar overrides the choice.
+For the fast path to work, a Windows image needs RDP enabled and port 3389 open
+in its firewall; a Linux image needs a VNC server on 5900.
+
 ## Files you'll edit
 
 - `.env` — secrets, timeouts, quotas.

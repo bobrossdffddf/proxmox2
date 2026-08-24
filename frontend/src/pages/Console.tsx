@@ -9,6 +9,7 @@ import {
   PERFORMANCE_LABELS,
   PerformanceMode,
 } from "../components/NoVNCConsole";
+import { GuacConsole } from "../components/GuacConsole";
 
 interface Props { user: AuthUser; onExit: () => void }
 
@@ -19,6 +20,31 @@ const CLIPBOARD_HISTORY_KEY = "wcta.console.clipboardHistory";
 const MAX_FILE_BYTES = 44 * 1024;
 
 type ScalingMode = "scale" | "viewport" | "native";
+
+/**
+ * Which console path is in use.
+ *
+ *   "fast"     - guacd speaking RDP (or an in-guest VNC server) straight to the
+ *                VM. Drawing operations rather than pixels, real clipboard, and
+ *                the desktop resizes to the window. This is the default.
+ *   "fallback" - QEMU's display console through the Proxmox API. Works on any
+ *                VM, including one with no network at all, but ships re-encoded
+ *                framebuffer images over an extra hop.
+ *
+ * We start on "fast" and drop to "fallback" automatically if the guest is not
+ * reachable on its remote-desktop port. The picker lets you force either.
+ */
+type ConsolePath = "fast" | "fallback";
+
+/** Colour depth for the fast path. Fewer bits, less to send. */
+type ColorMode = "crisp" | "balanced" | "lean";
+
+const COLOR_DEPTHS: Record<ColorMode, number> = { crisp: 32, balanced: 24, lean: 16 };
+const COLOR_LABELS: Record<ColorMode, string> = {
+  crisp: "True colour",
+  balanced: "Balanced",
+  lean: "Low bandwidth",
+};
 
 const SCALING_LABELS: Record<ScalingMode, string> = {
   viewport: "Fit window",
@@ -216,10 +242,18 @@ export function Console({ user, onExit }: Props) {
   const [toast, setToast] = useState<{ kind: "ok" | "error"; msg: string } | null>(null);
   const [clipboardText, setClipboardText] = useState("");
   const [clipboardHistory, setClipboardHistory] = useState<string[]>(() => loadClipboardHistory());
+  // Text the guest put on its clipboard. Only ever populated on the fast path
+  // — QEMU's console has no clipboard channel to fill this from.
+  const [remoteClipboard, setRemoteClipboard] = useState("");
   const [typingProgress, setTypingProgress] = useState<number | null>(null);
   // null = the user has not chosen, so fall back to whatever suits their role.
   const [scalingMode, setScalingMode] = useState<ScalingMode | null>(null);
   const [performanceMode, setPerformanceMode] = useState<PerformanceMode>("lan");
+  const [colorMode, setColorMode] = useState<ColorMode>("balanced");
+  // null until we learn which path works, so the picker can show "Auto".
+  const [consolePath, setConsolePath] = useState<ConsolePath | null>(null);
+  const [pathForced, setPathForced] = useState(false);
+  const [fallbackReason, setFallbackReason] = useState<string | null>(null);
   const [stopModalOpen, setStopModalOpen] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [demoModalOpen, setDemoModalOpen] = useState(false);
@@ -241,6 +275,36 @@ export function Console({ user, onExit }: Props) {
    * picture down without touching the presenter's resolution.
    */
   const effectiveScaling: ScalingMode = scalingMode ?? (spectating ? "scale" : "viewport");
+
+  /**
+   * Default to the fast path and let it demote itself. `consolePath` stays
+   * null until something decides, so a reconnect after a manual switch does
+   * not re-run the probe.
+   */
+  const activePath: ConsolePath = consolePath ?? "fast";
+  const onFastPath = activePath === "fast";
+
+  const demoteToFallback = (reason: string) => {
+    if (pathForced) {
+      // The user asked for this path explicitly, so we do not overrule them —
+      // but we must not leave them staring at "Connecting…" forever either.
+      setToast({ kind: "error", msg: `Fast console failed: ${reason}. Switch to compatible mode in Display.` });
+      return;
+    }
+    setConsolePath("fallback");
+    setFallbackReason(reason);
+  };
+
+  const choosePath = (next: ConsolePath | "auto") => {
+    setFallbackReason(null);
+    if (next === "auto") {
+      setPathForced(false);
+      setConsolePath(null);
+      return;
+    }
+    setPathForced(true);
+    setConsolePath(next);
+  };
 
   // Poll until running
   useEffect(() => {
@@ -334,7 +398,7 @@ export function Console({ user, onExit }: Props) {
     }
     if (typingProgress !== null) return;
 
-    const truncated = trimmed.length > MAX_TYPE_LENGTH;
+    const truncated = !onFastPath && trimmed.length > MAX_TYPE_LENGTH;
     setTypingProgress(0);
     try {
       await consoleRef.current?.typeText(trimmed, (done, total) => {
@@ -343,14 +407,31 @@ export function Console({ user, onExit }: Props) {
       rememberClipboard(trimmed);
       setToast({
         kind: "ok",
-        msg: truncated
-          ? `Typed the first ${MAX_TYPE_LENGTH} characters into the VM.`
-          : "Typed into the VM.",
+        // The two paths deliver text by genuinely different means, and the
+        // user has to know which one happened: on the fast path the text is
+        // waiting on the guest's clipboard and still needs a paste.
+        msg: onFastPath
+          ? "Sent to the VM's clipboard — press Ctrl+V inside the VM to paste."
+          : truncated
+            ? `Typed the first ${MAX_TYPE_LENGTH} characters into the VM.`
+            : "Typed into the VM.",
       });
     } catch (err) {
-      setToast({ kind: "error", msg: err instanceof Error ? err.message : "Could not send keystrokes" });
+      setToast({ kind: "error", msg: err instanceof Error ? err.message : "Could not send text" });
     } finally {
       setTypingProgress(null);
+    }
+  };
+
+  const copyFromVm = async () => {
+    if (!remoteClipboard) return;
+    try {
+      await navigator.clipboard.writeText(remoteClipboard);
+      setToast({ kind: "ok", msg: "Copied the VM's clipboard to your computer." });
+    } catch {
+      // Clipboard write can be refused without a user gesture or on http://.
+      setClipboardText(remoteClipboard);
+      setToast({ kind: "error", msg: "Your browser blocked the clipboard — the text is in the box instead." });
     }
   };
 
@@ -498,28 +579,59 @@ export function Console({ user, onExit }: Props) {
           {running && (
             <div className="console-group" aria-label="Display options">
               <span className="console-group-label">Display</span>
+              {/* On the fast path the guest desktop is resized to the window
+                  outright, so there is nothing to fit. */}
+              {!onFastPath && (
+                <label className="console-select">
+                  <span className="sr-only">Screen fit</span>
+                  <select
+                    value={effectiveScaling}
+                    onChange={(e) => setScalingMode(e.target.value as ScalingMode)}
+                    title="How the VM's screen is fitted into this window"
+                  >
+                    {(Object.keys(SCALING_LABELS) as ScalingMode[]).map((mode) => (
+                      <option key={mode} value={mode}>{SCALING_LABELS[mode]}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {onFastPath ? (
+                <label className="console-select">
+                  <span className="sr-only">Colour depth</span>
+                  <select
+                    value={colorMode}
+                    onChange={(e) => setColorMode(e.target.value as ColorMode)}
+                    title="Fewer colours means less to send. Reconnects the console."
+                  >
+                    {(Object.keys(COLOR_LABELS) as ColorMode[]).map((mode) => (
+                      <option key={mode} value={mode}>{COLOR_LABELS[mode]}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <label className="console-select">
+                  <span className="sr-only">Image quality</span>
+                  <select
+                    value={performanceMode}
+                    onChange={(e) => setPerformanceMode(e.target.value as PerformanceMode)}
+                    title="Trade picture quality against bandwidth. Fast (LAN) is right on the club network."
+                  >
+                    {(Object.keys(PERFORMANCE_LABELS) as PerformanceMode[]).map((mode) => (
+                      <option key={mode} value={mode}>{PERFORMANCE_LABELS[mode]}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <label className="console-select">
-                <span className="sr-only">Screen fit</span>
+                <span className="sr-only">Console connection</span>
                 <select
-                  value={effectiveScaling}
-                  onChange={(e) => setScalingMode(e.target.value as ScalingMode)}
-                  title="How the VM's screen is fitted into this window"
+                  value={pathForced ? activePath : "auto"}
+                  onChange={(e) => choosePath(e.target.value as ConsolePath | "auto")}
+                  title="Fast connects straight to the VM's own remote desktop. Compatible uses the Proxmox display console, which works even with no network in the guest."
                 >
-                  {(Object.keys(SCALING_LABELS) as ScalingMode[]).map((mode) => (
-                    <option key={mode} value={mode}>{SCALING_LABELS[mode]}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="console-select">
-                <span className="sr-only">Image quality</span>
-                <select
-                  value={performanceMode}
-                  onChange={(e) => setPerformanceMode(e.target.value as PerformanceMode)}
-                  title="Trade picture quality against bandwidth. Fast (LAN) is right on the club network."
-                >
-                  {(Object.keys(PERFORMANCE_LABELS) as PerformanceMode[]).map((mode) => (
-                    <option key={mode} value={mode}>{PERFORMANCE_LABELS[mode]}</option>
-                  ))}
+                  <option value="auto">Auto{consolePath === "fallback" ? " (compatible)" : " (fast)"}</option>
+                  <option value="fast">Force fast</option>
+                  <option value="fallback">Force compatible</option>
                 </select>
               </label>
               <button title="Save a PNG of the current screen" onClick={downloadScreenshot}>Screenshot</button>
@@ -580,21 +692,44 @@ export function Console({ user, onExit }: Props) {
         </div>
       )}
 
+      {fallbackReason && running && (
+        <div className="console-notice">
+          <span className="cred-label">Compatible mode</span>
+          <span>
+            Couldn't reach this VM's own remote desktop ({fallbackReason}), so
+            the console fell back to the Proxmox display, which is slower.
+            {session?.protocol === "rdp"
+              ? " Check that RDP is enabled in the image and its firewall allows port 3389."
+              : " Check that the image runs a VNC server on port 5900."}
+          </span>
+          <button onClick={() => choosePath("fast")}>Retry fast</button>
+          <button className="ghost" onClick={() => setFallbackReason(null)}>Dismiss</button>
+        </div>
+      )}
+
       {session && !spectating && <CredentialsBadge session={session} />}
 
       {interactive && (
         <div className="clipboard-bar">
           <div className="clipboard-intro">
-            <span className="cred-label">Send text</span>
+            <span className="cred-label">Clipboard</span>
             <span
               className="clipboard-hint"
-              title="QEMU's console has no shared clipboard with the guest, so text is delivered as real keystrokes instead. Ctrl+C and Ctrl+V work normally inside the VM."
+              title={
+                onFastPath
+                  ? "This console has a real clipboard channel to the guest. Text you send lands on the VM's clipboard; paste it there with Ctrl+V."
+                  : "The Proxmox display console has no clipboard channel to the guest, so text is delivered as real keystrokes instead."
+              }
             >
-              typed as keystrokes
+              {onFastPath ? "shared with the VM" : "typed as keystrokes"}
             </span>
           </div>
           <input
-            placeholder="Type or paste text here, then press Send to VM"
+            placeholder={
+              onFastPath
+                ? "Text to put on the VM's clipboard"
+                : "Type or paste text here, then press Send to VM"
+            }
             value={clipboardText}
             maxLength={MAX_TYPE_LENGTH}
             disabled={typingProgress !== null}
@@ -610,17 +745,38 @@ export function Console({ user, onExit }: Props) {
             className="primary"
             disabled={typingProgress !== null || !clipboardText.trim()}
             onClick={() => void typeIntoVm(clipboardText)}
-            title="Type the text above into the VM, character by character"
+            title={
+              onFastPath
+                ? "Put the text above on the VM's clipboard"
+                : "Type the text above into the VM, character by character"
+            }
           >
-            {typingProgress !== null ? `Sending… ${typingProgress}%` : "Send to VM"}
+            {typingProgress === null
+              ? "Send to VM"
+              : onFastPath
+                ? "Sending…"
+                : `Sending… ${typingProgress}%`}
           </button>
           <button
             disabled={typingProgress !== null}
             onClick={() => void typeFromLocalClipboard()}
-            title="Read your computer's clipboard and type it into the VM"
+            title="Read your computer's clipboard and send it to the VM"
           >
             From my clipboard
           </button>
+          {onFastPath && (
+            <button
+              disabled={!remoteClipboard}
+              onClick={() => void copyFromVm()}
+              title={
+                remoteClipboard
+                  ? "Copy what you last copied inside the VM to your own clipboard"
+                  : "Copy something inside the VM first"
+              }
+            >
+              Copy from VM
+            </button>
+          )}
           <select
             value=""
             aria-label="Recently sent text"
@@ -647,13 +803,31 @@ export function Console({ user, onExit }: Props) {
       {!error && isStarting && <StartupProgress session={session!} />}
 
       {!error && session && running && (
-        <NoVNCConsole
-          ref={consoleRef}
-          sessionPublicId={sessionId}
-          scalingMode={effectiveScaling}
-          performanceMode={performanceMode}
-          viewOnly={spectating}
-        />
+        onFastPath ? (
+          <GuacConsole
+            // Remounting on a path change is deliberate: the two components
+            // own entirely different connections.
+            key="guac"
+            ref={consoleRef}
+            sessionPublicId={sessionId}
+            colorDepth={COLOR_DEPTHS[colorMode]}
+            viewOnly={spectating}
+            onUnavailable={demoteToFallback}
+            onRemoteClipboard={(text) => {
+              setRemoteClipboard(text);
+              rememberClipboard(text);
+            }}
+          />
+        ) : (
+          <NoVNCConsole
+            key="novnc"
+            ref={consoleRef}
+            sessionPublicId={sessionId}
+            scalingMode={effectiveScaling}
+            performanceMode={performanceMode}
+            viewOnly={spectating}
+          />
+        )
       )}
 
       {!error && session && !running && !isStarting && (

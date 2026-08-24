@@ -104,6 +104,45 @@ export interface StagedVm {
   failure_reason: string | null;
 }
 
+/** One image, plus everything derived from it. */
+export interface ManagedTemplate {
+  id: string;
+  name: string;
+  description: string;
+  icon: TileTemplate["icon"];
+  protocol: "rdp" | "vnc";
+  port: number;
+  cpuCores: number;
+  memoryMb: number;
+  /** YAML tiles can be hidden but not deleted; the file is the source of truth. */
+  source: "yaml" | "imported";
+  enabled: boolean;
+  hidden: boolean;
+  templateVms: Array<{
+    node: string;
+    vmid: number;
+    /** null when no Proxmox node could be reached to check. */
+    exists: boolean | null;
+    isTemplate: boolean | null;
+    error?: string;
+  }>;
+  readyCount: number;
+  stagedCount: number;
+  activeSessions: number;
+  poolSize: number;
+  lastError: string | null;
+  consecutiveFailures: number;
+}
+
+export interface DestroyTemplateReport {
+  ok: boolean;
+  templateId: string;
+  tileRemoved: "deleted" | "hidden";
+  clonesDeleted: Array<{ vmid: number; node: string; kind: "session" | "staged" }>;
+  templatesDeleted: Array<{ vmid: number; node: string }>;
+  failed: Array<{ vmid: number; node: string; error: string }>;
+}
+
 export interface StagingTarget {
   templateId: string;
   templateName: string;
@@ -421,6 +460,19 @@ export const api = {
     }),
   announcements: () => request<Announcement[]>("/api/announcements"),
 
+  /**
+   * Mint a Guacamole connection token. Credentials stay server-side; the
+   * browser only ever holds this opaque blob.
+   */
+  guacConnect: (
+    sessionId: string,
+    opts: { width: number; height: number; dpi: number; colorDepth: number }
+  ) =>
+    request<{ token: string; sessionPublicId: string; protocol: "rdp" | "vnc"; readOnly: boolean }>(
+      "/api/rdp/connect",
+      { method: "POST", body: JSON.stringify({ sessionId, ...opts }) }
+    ),
+
   liveDemo: () => request<LiveDemo | null>("/api/vm/demo"),
   setDemoMode: (publicId: string, active: boolean, title?: string) =>
     request<{ ok: true; demoActive: boolean }>(`/api/vm/sessions/${publicId}/demo`, {
@@ -455,6 +507,15 @@ export const api = {
     }),
   retryStaging: (templateId: string) =>
     request<{ ok: true }>(`/api/admin/staging-targets/${templateId}/retry`, { method: "POST" }),
+
+  managedTemplates: () => request<ManagedTemplate[]>("/api/admin/templates"),
+  setTemplateHidden: (id: string, hidden: boolean) =>
+    request<{ ok: true }>(`/api/admin/templates/${id}/hidden`, {
+      method: "POST",
+      body: JSON.stringify({ hidden }),
+    }),
+  destroyTemplate: (id: string) =>
+    request<DestroyTemplateReport>(`/api/admin/templates/${id}`, { method: "DELETE" }),
   destroyStagedVm: (id: number) =>
     request<{ ok: true }>(`/api/admin/staged/${id}`, { method: "DELETE" }),
   forgetStagedVm: (id: number) =>

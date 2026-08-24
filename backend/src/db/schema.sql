@@ -207,3 +207,20 @@ CREATE TABLE IF NOT EXISTS template_staging_health (
   last_success_at      TIMESTAMPTZ,
   updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ---------------------------------------------------------------------------
+-- Template visibility overrides.
+--
+-- A template defined in templates.yaml cannot be deleted from the admin UI —
+-- the config mount is read-only and the file is the source of truth. Hiding it
+-- here lets an admin retire a broken image without shell access, and the row
+-- is removed again if the YAML entry ever goes away.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS template_overrides (
+  template_id VARCHAR(64) PRIMARY KEY,
+  hidden      BOOLEAN NOT NULL DEFAULT FALSE,
+  hidden_at   TIMESTAMPTZ,
+  reason      TEXT,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

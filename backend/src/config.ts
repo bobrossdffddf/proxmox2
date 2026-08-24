@@ -195,6 +195,12 @@ let _templates: TemplateConfig[] | null = null;
  * at startup and after each import (see services/importedTemplates.ts).
  */
 let _imported: TemplateConfig[] = [];
+/**
+ * Template ids an admin has hidden. Kept as a synchronous overlay for the same
+ * reason as `_imported`: getTemplates() has many callers and none of them can
+ * await. Loaded at startup and refreshed whenever the set changes.
+ */
+let _hidden: Set<string> = new Set();
 
 export function getNodes(): ProxmoxNodeConfig[] {
   if (!_nodes) {
@@ -207,12 +213,45 @@ export function getTemplates(): TemplateConfig[] {
   if (!_templates) {
     _templates = readYaml("templates.yaml", templatesFileSchema).templates as TemplateConfig[];
   }
-  if (_imported.length === 0) return _templates;
 
   // A YAML entry with the same id wins: hand-written config is the more
   // deliberate of the two.
   const yamlIds = new Set(_templates.map((t) => t.id));
+  const all = _imported.length === 0
+    ? _templates
+    : [..._templates, ..._imported.filter((t) => !yamlIds.has(t.id))];
+
+  if (_hidden.size === 0) return all;
+  // A hidden template is reported as disabled rather than dropped, so the many
+  // `.filter(t => t.enabled)` callers keep working and admin tooling can still
+  // see that the template exists.
+  return all.map((t) => (_hidden.has(t.id) ? { ...t, enabled: false } : t));
+}
+
+/** Every template including hidden ones, with their real enabled flag. */
+export function getAllTemplatesRaw(): TemplateConfig[] {
+  if (!_templates) {
+    _templates = readYaml("templates.yaml", templatesFileSchema).templates as TemplateConfig[];
+  }
+  const yamlIds = new Set(_templates.map((t) => t.id));
   return [..._templates, ..._imported.filter((t) => !yamlIds.has(t.id))];
+}
+
+/** True when the template came from templates.yaml rather than an import. */
+export function isYamlTemplate(id: string): boolean {
+  if (!_templates) {
+    _templates = readYaml("templates.yaml", templatesFileSchema).templates as TemplateConfig[];
+  }
+  return _templates.some((t) => t.id === id);
+}
+
+export function isTemplateHidden(id: string): boolean {
+  return _hidden.has(id);
+}
+
+/** Replace the hidden-template overlay. Called after loading it from the DB. */
+export function setHiddenTemplates(ids: string[]): void {
+  _hidden = new Set(ids);
 }
 
 /** Replace the imported-template overlay. Called after loading them from the DB. */
@@ -233,6 +272,7 @@ export function getTemplate(id: string): TemplateConfig | undefined {
 export function reloadConfigs(): void {
   _nodes = null;
   _templates = null;
+  // _imported and _hidden are database overlays, not file state — leave them.
   getNodes();
   getTemplates();
 }

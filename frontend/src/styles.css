@@ -1988,3 +1988,126 @@ h1 {
 }
 .staging-fault strong { color: var(--bad); font-weight: 600; }
 .staging-fault span { color: var(--text-2); word-break: break-word; }
+
+/* ---------------------------------------------------------------------------
+   Guacamole console (fast path)
+   guacd stacks several absolutely-positioned canvases inside .guac-display;
+   the wrapper owns sizing and focus.
+   --------------------------------------------------------------------------- */
+.console-canvas-wrap.guac {
+  position: relative;
+  overflow: hidden;
+  background: #000;
+  outline: none;
+}
+.console-canvas-wrap.guac:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.guac-display {
+  position: absolute;
+  inset: 0;
+  cursor: none;
+}
+.guac-display > div { position: relative; }
+
+/* Strip explaining that the console demoted itself to the slower path. */
+.console-notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  background: var(--warn-soft);
+  border-bottom: 1px solid rgba(232, 176, 75, 0.35);
+  font-size: 13px;
+  color: var(--text-2);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.console-notice > span:not(.cred-label) { flex: 1 1 320px; }
+
+/* ---------------------------------------------------------------------------
+   Image (template) management
+   --------------------------------------------------------------------------- */
+.template-row {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) auto auto;
+  gap: 14px;
+  align-items: start;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 14px;
+}
+.template-row + .template-row { margin-top: 10px; }
+.template-row.faulted { border-color: rgba(255, 107, 107, 0.35); }
+.template-row.hidden-row { opacity: 0.6; }
+.template-main { min-width: 0; }
+.template-row .name {
+  font-weight: 600;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.template-tag {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 2px 6px;
+  border-radius: var(--r);
+  border: 1px solid var(--line-strong);
+  color: var(--text-3);
+}
+.template-tag.warn { color: var(--warn); border-color: rgba(232, 176, 75, 0.4); }
+
+.template-vms { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.template-vm {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 3px 7px;
+  border-radius: var(--r);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.template-vm.ok { border-color: rgba(82, 212, 145, 0.35); color: var(--ok); }
+.template-vm.bad { border-color: rgba(255, 107, 107, 0.4); color: var(--bad); background: var(--bad-soft); }
+.template-vm.unknown { border-color: rgba(232, 176, 75, 0.35); color: var(--warn); }
+
+.template-counts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.template-counts b { color: var(--text); font-size: 13px; margin-right: 4px; }
+
+.destroy-list {
+  margin: 0 0 12px;
+  padding-left: 20px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.destroy-list b { color: var(--text); }
+
+.destroy-report {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+@media (max-width: 900px) {
+  .template-row { grid-template-columns: 1fr; }
+  .template-counts { flex-direction: row; gap: 14px; }
+}
